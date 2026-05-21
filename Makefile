@@ -1,6 +1,6 @@
 REPORTS_DIR ?= reports
 
-.PHONY: test lint format test-vmaas
+.PHONY: test lint format test-vmaas test-caas
 
 test:
 	mkdir -p $(REPORTS_DIR)
@@ -16,3 +16,7 @@ format:
 test-vmaas:
 	mkdir -p $(REPORTS_DIR)
 	pytest tests/vmaas/ -v $(if $(TEST),-k "$(TEST)") --junitxml=$(REPORTS_DIR)/vmaas.xml
+
+test-caas:
+	mkdir -p $(REPORTS_DIR)
+	pytest tests/caas/ -v $(if $(TEST),-k "$(TEST)") --junitxml=$(REPORTS_DIR)/caas.xml
