@@ -54,10 +54,19 @@ jobs:
       result: ${{ steps.test.outcome == 'success' && 'PASSED' || 'FAILED' }}
 
     env:
-      CLONE_NAME: "${{ inputs.test-suite || 'e2e' }}-${{ github.run_id }}"
       FLAVOR_LOCK: "/tmp/cluster-tool-flavor.lock"
 
     steps:
+      - name: Set clone name
+        run: |
+          # Bridge name = br- + first 8 chars of clone name (cluster-tool).
+          # Use 1-char suite prefix + last 7 digits of run ID so bridges
+          # are unique across suites (vmaas vs caas in same run) and
+          # across runs (same suite in different PRs).
+          SUITE="${{ inputs.test-suite || 'e2e' }}"
+          RUN_ID="${{ github.run_id }}"
+          echo "CLONE_NAME=${SUITE:0:1}${RUN_ID: -7}-${SUITE}" >> "$GITHUB_ENV"
+
       - name: Checkout repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
@@ -142,7 +151,7 @@ jobs:
           # (e.g. from interrupted teardowns). Only targets bridges matching
           # this clone's truncated name — safe with concurrent jobs.
           sudo python3 /usr/local/bin/cluster-tool destroy "${CLONE_NAME}" 2>/dev/null || true
-          BRIDGE_PREFIX="br-${CLONE_NAME:0:12}"
+          BRIDGE_PREFIX="br-${CLONE_NAME:0:8}"
           for br in $(ip -o link show | grep -oP "${BRIDGE_PREFIX}[^ @]*"); do
             echo "Removing stale bridge ${br}..."
             sudo ip link set "${br}" down 2>/dev/null || true
@@ -272,7 +281,7 @@ jobs:
           sudo python3 /usr/local/bin/cluster-tool destroy "${CLONE_NAME}" 2>&1 || true
 
           # Remove orphaned bridges that survive virsh net-destroy
-          BRIDGE_PREFIX="br-${CLONE_NAME:0:12}"
+          BRIDGE_PREFIX="br-${CLONE_NAME:0:8}"
           for br in $(ip -o link show | grep -oP "${BRIDGE_PREFIX}[^ @]*"); do
             echo "Removing orphaned bridge ${br}..."
             sudo ip link set "${br}" down 2>/dev/null || true
