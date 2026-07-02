@@ -89,6 +89,11 @@ on:
         required: false
         type: string
         default: "containerfile"
+      osac-cli-version:
+        description: "OSAC CLI version for the test image (e.g. 0.0.73). Defaults to latest GitHub release."
+        required: false
+        type: string
+        default: ""
       fork-pr-author-association:
         description: "PR author_association from the caller (OWNER, MEMBER, COLLABORATOR, CONTRIBUTOR, etc). Passed by callers for fork PR authorization since github.event context is not inherited by reusable workflows."
         required: false
@@ -379,11 +384,6 @@ jobs:
           sudo chown "$(id -u):$(id -g)" "$RUNNER_TEMP/kubeconfig"
           chmod 600 "$RUNNER_TEMP/kubeconfig"
 
-      - name: Build test image
-        env:
-          E2E_IMAGE: "osac-e2e-tests:${{ github.run_id }}"
-        run: podman build --no-cache -t "${E2E_IMAGE}" -f Containerfile .
-
       - name: Build and load component image
         if: inputs.component-repo != ''
         env:
@@ -412,6 +412,13 @@ jobs:
             podman build -t "${COMPONENT_TAG}" -f "${SRC}/${COMPONENT_FILE}" "${SRC}"
           fi
 
+          # Build OSAC CLI from source when the component is fulfillment-service
+          if [[ "${COMPONENT_REPO}" == *"fulfillment-service"* ]]; then
+            echo "Building osac CLI from source..."
+            (cd "${SRC}" && CGO_ENABLED=0 go build -o "$RUNNER_TEMP/osac-cli-bin" ./cmd/osac)
+            echo "OSAC_CLI_BIN=$RUNNER_TEMP/osac-cli-bin" >> "$GITHUB_ENV"
+          fi
+
           # Load image onto the cluster node so CRI-O can use it locally.
           # On RHCOS, root podman and CRI-O share /var/lib/containers/storage,
           # so 'podman load' via oc debug makes the image available to the kubelet.
@@ -426,6 +433,19 @@ jobs:
           echo "COMPONENT_IMAGE=${COMPONENT_TAG}" >> "$GITHUB_ENV"
 
           rm -rf "$RUNNER_TEMP/component-src"
+
+      - name: Build test image
+        env:
+          E2E_IMAGE: "osac-e2e-tests:${{ github.run_id }}"
+          OSAC_VERSION: ${{ inputs.osac-cli-version }}
+        run: |
+          BUILD_ARGS="--build-arg OSAC_VERSION=${OSAC_VERSION}"
+          if [[ -n "${OSAC_CLI_BIN:-}" ]] && [[ -f "${OSAC_CLI_BIN}" ]]; then
+            cp "${OSAC_CLI_BIN}" ./osac-cli-bin
+            BUILD_ARGS="--build-arg OSAC_CLI_BIN=osac-cli-bin"
+          fi
+          podman build --no-cache ${BUILD_ARGS} -t "${E2E_IMAGE}" -f Containerfile .
+          rm -f ./osac-cli-bin
 
       - name: Prepare cluster prerequisites
         env:

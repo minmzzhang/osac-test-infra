@@ -64,6 +64,11 @@ on:
         required: false
         type: string
         default: ""
+      osac-cli-version:
+        description: "OSAC CLI version for the test image (e.g. 0.0.73). Defaults to latest GitHub release."
+        required: false
+        type: string
+        default: ""
     outputs:
       result:
         description: "Test result: PASSED or FAILED"
@@ -266,7 +271,10 @@ jobs:
       - name: Build test image
         env:
           E2E_IMAGE: "osac-e2e-tests:${{ github.run_id }}"
-        run: podman build --no-cache -t "${E2E_IMAGE}" -f Containerfile .
+          OSAC_VERSION: ${{ inputs.osac-cli-version }}
+        run: |
+          podman build --no-cache --build-arg OSAC_VERSION="${OSAC_VERSION}" \
+            -t "${E2E_IMAGE}" -f Containerfile .
 
       - name: Deploy OSAC
         env:
