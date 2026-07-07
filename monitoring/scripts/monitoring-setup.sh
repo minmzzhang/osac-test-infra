@@ -12,6 +12,12 @@
 #   --add-tunnel <host> <base_port>
 #               Set up a persistent SSH tunnel from the central machine to
 #               a remote runner. Forwards remote 9100/9101 to local ports.
+#               Also registers the runner in prometheus.yml and reloads
+#               Prometheus -- no manual scrape-config edit needed.
+#
+#   --remove-tunnel <host>
+#               Tear down a remote runner's tunnel and remove it from
+#               Prometheus's scrape config.
 #
 # Prerequisites:
 #   - podman installed
@@ -27,19 +33,107 @@ MONITORING_REPO_DIR="${MONITORING_REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 QUADLET_DIR="${HOME}/.config/containers/systemd"
 SYSTEMD_USER_DIR="${HOME}/.config/systemd/user"
 
+# Registry of remote runners wired into Prometheus: one "<host> <port>" line
+# per runner. Source of truth for the auto-generated BEGIN/END REMOTE TARGETS
+# block in prometheus.yml -- see regenerate_remote_targets() below.
+REMOTE_REGISTRY="${MONITORING_HOME}/config/remote-runners.txt"
+
 ###############################################################################
 phase() { echo -e "\n==> Phase $1: $2"; }
 info()  { echo "    $1"; }
 ###############################################################################
 
 usage() {
-    echo "Usage: $(basename "$0") [--central | --agent | --add-tunnel <host> <base_port>]"
+    echo "Usage: $(basename "$0") [--central | --agent | --add-tunnel <host> <base_port> | --remove-tunnel <host>]"
     echo ""
     echo "Modes:"
     echo "  --central              Full monitoring stack (central machine only)"
     echo "  --agent                Exporters only (every runner machine)"
-    echo "  --add-tunnel <h> <p>   Add SSH tunnel to remote runner"
+    echo "  --add-tunnel <h> <p>   Add SSH tunnel to remote runner, wire it into Prometheus"
+    echo "  --remove-tunnel <h>    Remove a remote runner's tunnel and Prometheus target"
     exit 1
+}
+
+###############################################################################
+# Remote runner registry + Prometheus scrape-config management
+#
+# remote-runners.txt is the source of truth for which remote runners are
+# wired into Prometheus. The BEGIN/END REMOTE TARGETS block in prometheus.yml
+# is regenerated from this file on every --add-tunnel / --remove-tunnel run --
+# never hand-edited.
+###############################################################################
+registry_upsert() {
+    local host="$1" port="$2"
+    local tmp
+    tmp="$(mktemp)"
+    touch "${REMOTE_REGISTRY}"
+    { grep -v "^${host} " "${REMOTE_REGISTRY}" || true; echo "${host} ${port}"; } > "${tmp}"
+    mv "${tmp}" "${REMOTE_REGISTRY}"
+}
+
+registry_remove() {
+    local host="$1"
+    [[ -f "${REMOTE_REGISTRY}" ]] || return 0
+    local tmp
+    tmp="$(mktemp)"
+    grep -v "^${host} " "${REMOTE_REGISTRY}" > "${tmp}" || true
+    mv "${tmp}" "${REMOTE_REGISTRY}"
+}
+
+registry_port_for_host() {
+    local host="$1"
+    [[ -f "${REMOTE_REGISTRY}" ]] || return 1
+    awk -v h="${host}" '$1 == h { print $2; found=1 } END { exit !found }' "${REMOTE_REGISTRY}"
+}
+
+regenerate_remote_targets() {
+    local prom_config="${MONITORING_HOME}/config/prometheus.yml"
+    [[ -f "${prom_config}" ]] || return 0
+
+    local body
+    body="$(mktemp)"
+    if [[ -s "${REMOTE_REGISTRY}" ]]; then
+        {
+            echo "  - job_name: node-exporter-remote"
+            echo "    static_configs:"
+            while read -r host port; do
+                [[ -z "${host}" ]] && continue
+                printf '      - targets:\n          - 127.0.0.1:%s\n        labels:\n          instance: %s\n          role: agent\n' \
+                    "${port}" "${host}"
+            done < "${REMOTE_REGISTRY}"
+        } > "${body}"
+    fi
+
+    local tmp
+    tmp="$(mktemp)"
+    awk -v bodyfile="${body}" '
+        /# BEGIN REMOTE TARGETS/ {
+            print
+            while ((getline line < bodyfile) > 0) print line
+            close(bodyfile)
+            skipping = 1
+            next
+        }
+        /# END REMOTE TARGETS/ { skipping = 0 }
+        skipping { next }
+        { print }
+    ' "${prom_config}" > "${tmp}"
+    mv "${tmp}" "${prom_config}"
+    rm -f "${body}"
+}
+
+reload_prometheus() {
+    if command -v curl &>/dev/null; then
+        if curl -sf -X POST http://127.0.0.1:9091/-/reload 2>/dev/null; then
+            info "Prometheus config reloaded."
+        else
+            echo "  WARNING: Prometheus reload failed -- restart it manually or run:"
+            echo "    curl -X POST http://127.0.0.1:9091/-/reload"
+        fi
+    else
+        echo "  WARNING: curl not available -- reload Prometheus manually:"
+        echo "    curl -X POST http://127.0.0.1:9091/-/reload"
+    fi
 }
 
 ###############################################################################
@@ -75,8 +169,91 @@ case "${1:-}" in
             exit 1
         fi
         ;;
+    --remove-tunnel)
+        MODE="remove-tunnel"
+        TUNNEL_HOST="${2:-}"
+        if [[ -z "${TUNNEL_HOST}" ]]; then
+            echo "ERROR: --remove-tunnel requires <host>" >&2
+            usage
+        fi
+        ;;
     *)  usage ;;
 esac
+
+###############################################################################
+# Handle --add-tunnel / --remove-tunnel modes
+#
+# These operate on an already-provisioned central machine and only touch the
+# tunnel service + Prometheus scrape config -- they don't need any of the
+# central/agent setup phases below, so they exit early.
+###############################################################################
+if [[ "${MODE}" == "tunnel" ]]; then
+    phase 1 "Setting up SSH tunnel to ${TUNNEL_HOST} (base port ${TUNNEL_BASE_PORT})"
+
+    SSH_DIR="${MONITORING_HOME}/.ssh"
+    mkdir -p "${SSH_DIR}"
+    chmod 700 "${SSH_DIR}"
+
+    # Generate SSH key if it doesn't exist
+    KEY_FILE="${SSH_DIR}/monitoring_ed25519"
+    if [[ ! -f "${KEY_FILE}" ]]; then
+        ssh-keygen -t ed25519 -N "" -f "${KEY_FILE}" -C "monitoring@$(hostname)"
+        info "SSH key generated: ${KEY_FILE}"
+        echo ""
+        echo "  Copy the public key to the remote runner:"
+        echo "    ssh-copy-id -i ${KEY_FILE}.pub <user>@${TUNNEL_HOST}"
+        echo ""
+        echo "  Or manually append to ~/.ssh/authorized_keys on the remote host:"
+        cat "${KEY_FILE}.pub"
+        echo ""
+    fi
+
+    # Install tunnel template if not already present
+    mkdir -p "${SYSTEMD_USER_DIR}"
+    cp "${MONITORING_REPO_DIR}/systemd/monitoring-tunnel@.service" \
+       "${SYSTEMD_USER_DIR}/monitoring-tunnel@.service"
+    systemctl --user daemon-reload
+
+    # Start the tunnel service
+    INSTANCE="${TUNNEL_HOST}--${TUNNEL_BASE_PORT}"
+    systemctl --user enable --now "monitoring-tunnel@${INSTANCE}.service"
+    info "Tunnel started: monitoring-tunnel@${INSTANCE}.service"
+    info "  Remote 9100 -> local ${TUNNEL_BASE_PORT} (node_exporter)"
+
+    phase 2 "Wiring ${TUNNEL_HOST} into Prometheus"
+    registry_upsert "${TUNNEL_HOST}" "${TUNNEL_BASE_PORT}"
+    regenerate_remote_targets
+    reload_prometheus
+    info "Registered in ${REMOTE_REGISTRY} and prometheus.yml"
+
+    echo ""
+    echo "Next steps (if not already done):"
+    echo "  1. Ensure the SSH key is authorized on ${TUNNEL_HOST}:"
+    echo "       ssh-copy-id -i ${KEY_FILE}.pub <user>@${TUNNEL_HOST}"
+    echo "  2. Run monitoring-health-check.sh to verify the target is up"
+    exit 0
+fi
+
+if [[ "${MODE}" == "remove-tunnel" ]]; then
+    phase 1 "Removing SSH tunnel to ${TUNNEL_HOST}"
+
+    port="$(registry_port_for_host "${TUNNEL_HOST}")" || true
+    if [[ -z "${port}" ]]; then
+        echo "ERROR: ${TUNNEL_HOST} is not registered in ${REMOTE_REGISTRY}" >&2
+        exit 1
+    fi
+
+    INSTANCE="${TUNNEL_HOST}--${port}"
+    systemctl --user disable --now "monitoring-tunnel@${INSTANCE}.service" 2>/dev/null || true
+    info "Tunnel stopped: monitoring-tunnel@${INSTANCE}.service"
+
+    phase 2 "Unwiring ${TUNNEL_HOST} from Prometheus"
+    registry_remove "${TUNNEL_HOST}"
+    regenerate_remote_targets
+    reload_prometheus
+    info "Removed from ${REMOTE_REGISTRY} and prometheus.yml"
+    exit 0
+fi
 
 ###############################################################################
 # Phase 1: Create directory layout
@@ -297,50 +474,6 @@ if [[ "${MODE}" == "central" ]]; then
     for svc in "${CENTRAL_SERVICES[@]}"; do
         systemctl --user enable "${svc}" 2>/dev/null || true
     done
-fi
-
-###############################################################################
-# Handle --add-tunnel mode
-###############################################################################
-if [[ "${MODE}" == "tunnel" ]]; then
-    phase 1 "Setting up SSH tunnel to ${TUNNEL_HOST} (base port ${TUNNEL_BASE_PORT})"
-
-    SSH_DIR="${MONITORING_HOME}/.ssh"
-    mkdir -p "${SSH_DIR}"
-    chmod 700 "${SSH_DIR}"
-
-    # Generate SSH key if it doesn't exist
-    KEY_FILE="${SSH_DIR}/monitoring_ed25519"
-    if [[ ! -f "${KEY_FILE}" ]]; then
-        ssh-keygen -t ed25519 -N "" -f "${KEY_FILE}" -C "monitoring@$(hostname)"
-        info "SSH key generated: ${KEY_FILE}"
-        echo ""
-        echo "  Copy the public key to the remote runner:"
-        echo "    ssh-copy-id -i ${KEY_FILE}.pub <user>@${TUNNEL_HOST}"
-        echo ""
-        echo "  Or manually append to ~/.ssh/authorized_keys on the remote host:"
-        cat "${KEY_FILE}.pub"
-        echo ""
-    fi
-
-    # Install tunnel template if not already present
-    mkdir -p "${SYSTEMD_USER_DIR}"
-    cp "${MONITORING_REPO_DIR}/systemd/monitoring-tunnel@.service" \
-       "${SYSTEMD_USER_DIR}/monitoring-tunnel@.service"
-    systemctl --user daemon-reload
-
-    # Start the tunnel service
-    INSTANCE="${TUNNEL_HOST}--${TUNNEL_BASE_PORT}"
-    systemctl --user enable --now "monitoring-tunnel@${INSTANCE}.service"
-    info "Tunnel started: monitoring-tunnel@${INSTANCE}.service"
-    info "  Remote 9100 -> local ${TUNNEL_BASE_PORT} (node_exporter)"
-
-    echo ""
-    echo "Next steps:"
-    echo "  1. Ensure the SSH key is authorized on ${TUNNEL_HOST}"
-    echo "  2. Add a scrape target to prometheus.yml for port ${TUNNEL_BASE_PORT}"
-    echo "  3. Reload Prometheus: curl -X POST http://127.0.0.1:9091/-/reload"
-    exit 0
 fi
 
 ###############################################################################
