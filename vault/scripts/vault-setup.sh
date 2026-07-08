@@ -450,6 +450,19 @@ path "secret/data/osac/e2e/*" {
 path "secret/data/osac/monitoring/github-token" {
   capabilities = ["read"]
 }
+# Alertmanager's Slack webhook -- was only ever manually configured in the
+# deployed alertmanager.yml on osac-ci-1, never committed to git (it's a
+# credential). --update-central needs it to render the config without
+# clobbering the deployed file with the repo template's placeholder.
+path "secret/data/osac/monitoring/slack-webhook-url" {
+  capabilities = ["read"]
+}
+# Grafana's GitHub OAuth app credentials + root URL -- previously only in
+# the manually-configured .env.grafana / hardcoded in grafana.container
+# on osac-ci-1, never in git.
+path "secret/data/osac/monitoring/grafana-oauth" {
+  capabilities = ["read"]
+}
 POLICY
 echo "Policy 'osac-e2e' created."
 

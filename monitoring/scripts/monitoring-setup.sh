@@ -42,6 +42,16 @@
 #   - For --add-tunnel: ssh, ssh-keygen installed
 set -euo pipefail
 
+# `systemctl --user` needs XDG_RUNTIME_DIR/DBUS_SESSION_BUS_ADDRESS to reach
+# the user's systemd/dbus instance. An interactive login shell always has
+# these, but a process spawned outside one -- e.g. a GitHub Actions
+# self-hosted runner job (see deploy-monitoring.yml, OSAC-2204) -- may not,
+# even though loginctl enable-linger (Phase 7 below) keeps that instance
+# running persistently at the standard path. Default to that path instead
+# of failing with "Failed to connect to user scope bus via local transport".
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
+
 MONITORING_HOME="${HOME}/.monitoring-server"
 # Resolve to the monitoring/ directory: scripts live at monitoring/scripts/
 MONITORING_REPO_DIR="${MONITORING_REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -314,7 +324,33 @@ if [[ "${MODE}" == "update-central" ]]; then
 
     cp "${MONITORING_REPO_DIR}/config/prometheus.yml"   "${MONITORING_HOME}/config/prometheus.yml"
     cp "${MONITORING_REPO_DIR}/config/alert-rules.yml"  "${MONITORING_HOME}/config/alert-rules.yml"
-    cp "${MONITORING_REPO_DIR}/config/alertmanager.yml" "${MONITORING_HOME}/config/alertmanager.yml"
+
+    # alertmanager.yml's api_url is a real credential (Slack webhook) that's
+    # never committed to git -- the repo copy only has the SLACK_WEBHOOK_URL
+    # placeholder. A plain cp here would silently overwrite a working,
+    # manually-configured webhook with that placeholder (this happened
+    # live during OSAC-2204 rollout and broke Alertmanager). Render the
+    # placeholder from the env var if provided; otherwise leave whatever's
+    # already deployed untouched rather than risk clobbering it.
+    if [[ -n "${SLACK_WEBHOOK_URL:-}" ]]; then
+        # Escape sed's special replacement characters (&, |, backslash) --
+        # a raw URL containing any of them would otherwise corrupt the
+        # substitution or be misinterpreted as sed syntax.
+        escaped_webhook="$(printf '%s' "${SLACK_WEBHOOK_URL}" | sed -e 's/[\&|]/\\&/g')"
+        tmp_alertmanager="$(mktemp)"
+        sed "s|SLACK_WEBHOOK_URL|${escaped_webhook}|g" \
+            "${MONITORING_REPO_DIR}/config/alertmanager.yml" > "${tmp_alertmanager}"
+        # cp -f, not mv -- alertmanager.yml is bind-mounted as a single file
+        # into the container (see the regenerate_remote_targets comment on
+        # prometheus.yml, OSAC-2202); mv would swap in a new inode the
+        # already-running container never sees. Only replace the deployed
+        # file once rendering has fully succeeded.
+        cp -f "${tmp_alertmanager}" "${MONITORING_HOME}/config/alertmanager.yml"
+        rm -f "${tmp_alertmanager}"
+    else
+        echo "  WARNING: SLACK_WEBHOOK_URL not set -- leaving deployed alertmanager.yml" \
+             "untouched (would otherwise overwrite it with the repo's placeholder)."
+    fi
     cp "${MONITORING_REPO_DIR}/config/grafana/datasources.yml" "${MONITORING_HOME}/config/grafana/datasources.yml"
     cp "${MONITORING_REPO_DIR}/config/grafana/dashboards.yml"  "${MONITORING_HOME}/config/grafana/dashboards.yml"
     # Remove stale dashboards first -- a plain cp only adds/overwrites, so a
@@ -412,6 +448,10 @@ if [[ "${MODE}" == "central" ]]; then
     mkdir -p "${MONITORING_HOME}/data/"{prometheus,grafana,alertmanager}
     mkdir -p "${MONITORING_HOME}/.ssh"
     chmod 700 "${MONITORING_HOME}/.ssh"
+    # Grafana's TLS cert/key live here -- provisioned manually (real
+    # credential material, never committed), see monitoring/README.md.
+    mkdir -p "${MONITORING_HOME}/certs"
+    chmod 700 "${MONITORING_HOME}/certs"
 
     # Data dirs are owned by the current user; containers run with
     # keep-id so the host uid maps into the container.
@@ -444,6 +484,28 @@ if [[ "${MODE}" == "central" ]]; then
         echo ""
         echo "  WARNING: Edit ${MONITORING_HOME}/.env with your GitHub token."
         echo "  The org-runner-exporter will not work without a valid token."
+    fi
+
+    # Create .env.grafana for GitHub OAuth login + root URL + admin
+    # password if it doesn't exist
+    if [[ ! -f "${MONITORING_HOME}/.env.grafana" ]]; then
+        {
+            echo "# GitHub OAuth app credentials + root URL + admin password for Grafana"
+            echo "# Create an OAuth app: https://github.com/organizations/osac-project/settings/applications"
+            echo "GF_AUTH_GITHUB_CLIENT_ID=REPLACE_ME"
+            echo "GF_AUTH_GITHUB_CLIENT_SECRET=REPLACE_ME"
+            echo "GF_SERVER_ROOT_URL=https://REPLACE_ME:3000"
+            # Only takes effect on Grafana's first-ever boot (seeds the
+            # initial admin user) -- without it, a fresh deployment
+            # defaults to the well-known admin/admin.
+            echo "GF_SECURITY_ADMIN_PASSWORD=REPLACE_ME"
+        } > "${MONITORING_HOME}/.env.grafana"
+        chmod 600 "${MONITORING_HOME}/.env.grafana"
+        echo ""
+        echo "  WARNING: Edit ${MONITORING_HOME}/.env.grafana with your GitHub OAuth app"
+        echo "  credentials, this host's address, and a strong admin password."
+        echo "  Also place a TLS cert/key at ${MONITORING_HOME}/certs/grafana.{crt,key}."
+        echo "  Grafana will not start without both."
     fi
 else
     info "Agent mode -- no config files to copy."
