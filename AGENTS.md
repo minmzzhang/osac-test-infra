@@ -103,7 +103,7 @@ Place tests in the appropriate suite directory:
 ```python
 from tests.core.helpers import wait_for_cr, wait_for_deletion, wait_for_provision, wait_for_running
 
-def test_compute_instance_lifecycle(cli, k8s_hub_client, default_subnet):
+def test_compute_instance_lifecycle(grpc, cli, k8s_hub_client, default_subnet):
     # 1. Create via gRPC (or the CLI's create_compute_instance / create_compute_instance_with_catalog_item)
     ci_id = grpc.create_compute_instance(catalog_item="...", subnet_ids=[default_subnet])
 
@@ -136,7 +136,7 @@ def test_compute_instance_lifecycle(cli, k8s_hub_client, default_subnet):
 For VM-based tests, access the workload cluster via `k8s_virt_client` fixture (scoped to vmaas tests in `tests/vmaas/conftest.py`):
 
 ```python
-def test_vm_instance_exists(k8s_hub_client, k8s_virt_client, default_subnet):
+def test_vm_instance_exists(grpc, k8s_hub_client, k8s_virt_client, default_subnet):
     ci_id = grpc.create_compute_instance(catalog_item="...", subnet_ids=[default_subnet])
     name = wait_for_cr(k8s=k8s_hub_client, uuid=ci_id)
     vm_namespace = k8s_hub_client.get_compute_instance_vm_namespace(name=name)
@@ -234,18 +234,11 @@ Token creation is automatic: fixtures run `oc create token <service-account> -n 
 ### Run Tests
 
 ```bash
-# All tests (parallel, 4 workers)
-make test
-
-# Specific suite
-make test-vmaas
-
-# Single test with pytest filter
-TEST=test_compute_instance_lifecycle make test-vmaas
-
-# Sequential execution (debugging)
-uv run pytest tests/vmaas/ -v --tb=short
+make test                                    # All suites (parallel)
+TEST=test_name make test-vmaas              # Specific test with filter
 ```
+
+See README.md for full test execution documentation.
 
 ### Debugging Failed Tests
 

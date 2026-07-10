@@ -11,6 +11,7 @@ This repository contains pytest-based E2E test infrastructure for OSAC. Tests ex
 ## Architecture
 
 ### Directory Structure
+
 - `tests/` - Pytest test suites
   - `vmaas/` - ComputeInstance lifecycle tests
   - `caas/` - ClusterOrder lifecycle tests
