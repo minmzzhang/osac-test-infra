@@ -62,64 +62,12 @@ jobs:
           GH_TOKEN: ${{ steps.vault.outputs.GH_ORG_TOKEN }}
           LOOKBACK_HOURS: ${{ inputs.lookback-hours || '25' }}
         run: |
-          SINCE=$(date -u -d "${LOOKBACK_HOURS} hours ago" +%Y-%m-%dT%H:%M:%S)
-          echo "Listing runs completed since ${SINCE}Z..."
+          OUTPUT_DIR="${RUNNER_TEMP}/discover"
+          .github/scripts/discover-e2e-runs.sh "${LOOKBACK_HOURS}" "${OUTPUT_DIR}"
+          # shellcheck disable=SC1091
+          source "${OUTPUT_DIR}/status.env"
 
-          # This repo's own two reusable workflows are always in scope --
-          # workflow_run (scan-e2e-logs.yml) only covers runs triggered
-          # directly here, so this audit is their cross-repo safety net too.
-          TARGETS=(
-            "${GITHUB_REPOSITORY}:e2e-vmaas.yml"
-            "${GITHUB_REPOSITORY}:e2e-vmaas-full-install.yml"
-          )
-
-          # Discover every OTHER repo currently calling into these reusable
-          # workflows, instead of relying on a manually maintained list
-          # (verified via a real run of this exact query that a static list
-          # goes stale fast: osac-aap, osac-operator, fulfillment-service,
-          # and a second caller inside osac-installer/nightly-build.yaml were
-          # all found this way, none of them in the original hand-written
-          # list). Local callers here use relative `uses: ./...` syntax so
-          # they don't match this search, which is why the baseline above is
-          # still needed. This dynamic discovery -- and GH_ORG_TOKEN below --
-          # becomes unnecessary once the planned monorepo migration lands.
-          echo "::group::Discover cross-repo callers"
-          DISCOVER_RESP="${RUNNER_TEMP}/discover.json"
-          HTTP_CODE=$(curl -sL -o "${DISCOVER_RESP}" -w '%{http_code}' \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "Accept: application/vnd.github+json" \
-            "${GITHUB_API_URL}/search/code?q=${GITHUB_REPOSITORY}%2F.github%2Fworkflows%2Fe2e-vmaas+org:osac-project&per_page=100")
-          if [[ "${HTTP_CODE}" != "200" ]]; then
-            echo "::warning::Cross-repo caller discovery failed (HTTP ${HTTP_CODE}); auditing only this repo's own runs this time."
-          else
-            while IFS= read -r TARGET; do
-              TARGETS+=("${TARGET}")
-            done < <(jq -r '.items[]? | "\(.repository.full_name):\(.path | split("/") | last)"' "${DISCOVER_RESP}" | sort -u)
-          fi
-          echo "Auditing ${#TARGETS[@]} target(s): ${TARGETS[*]}"
-          echo "::endgroup::"
-
-          RUNS="[]"
-          SKIPPED_TARGETS=0
-          for TARGET in "${TARGETS[@]}"; do
-            REPO="${TARGET%%:*}"
-            WORKFLOW="${TARGET#*:}"
-            RESP_FILE="${RUNNER_TEMP}/runs-resp.json"
-            HTTP_CODE=$(curl -sL -o "${RESP_FILE}" -w '%{http_code}' \
-              -H "Authorization: Bearer ${GH_TOKEN}" \
-              -H "Accept: application/vnd.github+json" \
-              "${GITHUB_API_URL}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?status=completed&created=%3E${SINCE}&per_page=100")
-            if [[ "${HTTP_CODE}" != "200" ]]; then
-              echo "::warning::Could not list runs for ${TARGET} (HTTP ${HTTP_CODE}), skipping."
-              SKIPPED_TARGETS=$((SKIPPED_TARGETS + 1))
-              continue
-            fi
-            IDS=$(jq --arg repo "${REPO}" '[.workflow_runs[]? | {run_id: (.id | tostring), repo: $repo}]' "${RESP_FILE}")
-            RUNS=$(jq -cn --argjson a "${RUNS}" --argjson b "${IDS}" '$a + $b')
-          done
-
-          echo "Found $(echo "${RUNS}" | jq 'length') run(s) to audit across ${#TARGETS[@]} target(s)."
-          echo "runs=${RUNS}" >> "$GITHUB_OUTPUT"
+          echo "runs=$(cat "${OUTPUT_DIR}/runs.json")" >> "$GITHUB_OUTPUT"
           # Listing failures mean we never even knew about some runs, so they
           # can never show up as scan failures below -- tracked separately so
           # a partial audit still can't quietly report as a clean pass.
