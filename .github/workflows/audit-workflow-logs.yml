@@ -72,6 +72,11 @@ jobs:
           # can never show up as scan failures below -- tracked separately so
           # a partial audit still can't quietly report as a clean pass.
           echo "skipped-targets=${SKIPPED_TARGETS}" >> "$GITHUB_OUTPUT"
+          # Discovery failing outright is distinct from skipped-targets above
+          # (which stays 0 in that case, since the loop only ran over this
+          # repo's own baseline targets) -- surfaced separately so it isn't
+          # silently invisible to the summary/notify steps below.
+          echo "discovery-failed=${DISCOVERY_FAILED}" >> "$GITHUB_OUTPUT"
 
       - name: Scan each run's logs
         id: scan
@@ -138,6 +143,7 @@ jobs:
           # two skip counters are added in bash below, not here.
           SKIPPED_TARGETS: ${{ steps.list.outputs.skipped-targets || '0' }}
           SKIPPED_SCANS: ${{ steps.scan.outputs.skipped-scans || '0' }}
+          DISCOVERY_FAILED: ${{ steps.list.outputs.discovery-failed || 'false' }}
           RUN_ID: ${{ github.run_id }}
         run: |
           SKIPPED_TOTAL=$((SKIPPED_TARGETS + SKIPPED_SCANS))
@@ -153,12 +159,17 @@ jobs:
               echo ""
               echo ":warning: **${SKIPPED_TOTAL}** target(s)/run(s) could not be listed or scanned this time (see \`::warning::\` annotations above) -- this audit is partial, not a clean pass."
             fi
+            if [[ "${DISCOVERY_FAILED}" == "true" ]]; then
+              echo ""
+              echo ":warning: Cross-repo caller discovery failed -- only this repo's own workflows were audited this time, not the other known callers -- this audit is partial, not a clean pass."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
           echo "skipped-total=${SKIPPED_TOTAL}" >> "$GITHUB_OUTPUT"
 
           NOTIFY_PARTS=()
           [[ "${FLAGGED_COUNT}" != "0" ]] && NOTIFY_PARTS+=("${FLAGGED_COUNT} run(s) with leaked credential(s)")
           [[ "${SKIPPED_TOTAL}" != "0" ]] && NOTIFY_PARTS+=("${SKIPPED_TOTAL} target(s)/run(s) not scanned (partial audit)")
+          [[ "${DISCOVERY_FAILED}" == "true" ]] && NOTIFY_PARTS+=("cross-repo caller discovery failed (partial audit)")
           # "${arr[*]}" with IFS set only honors the *first* IFS character
           # when joining, so a ", " separator needs an explicit printf join
           # instead.
@@ -232,7 +243,7 @@ jobs:
         # principle leave flagged-count/skipped-total unset rather than '0'.
         if: >
           always() &&
-          (steps.scan.outcome == 'failure' || steps.scan.outputs.flagged-count != '0' || steps.summary.outputs.skipped-total != '0')
+          (steps.scan.outcome == 'failure' || steps.scan.outputs.flagged-count != '0' || steps.summary.outputs.skipped-total != '0' || steps.list.outputs.discovery-failed == 'true')
         uses: ./.github/actions/notify-slack
         with:
           status: failure
