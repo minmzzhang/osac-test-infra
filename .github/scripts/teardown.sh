@@ -33,3 +33,33 @@ podman rmi "${E2E_IMAGE}" 2>/dev/null || true
 if [[ -n "${COMPONENT_IMAGE:-}" ]]; then
   podman rmi "${COMPONENT_IMAGE}" 2>/dev/null || true
 fi
+
+# --- Clean up BMaaS virtual BMH resources ---
+# These env vars are set by setup-virtual-bmh.sh via $GITHUB_ENV.
+# When unset, no BMaaS cleanup runs — VMaaS teardown is unaffected.
+if [[ -n "${BMH_VM_NAMES:-}" ]]; then
+  echo "Cleaning up virtual BMH VMs..."
+  for VM_NAME in ${BMH_VM_NAMES}; do
+    sudo virsh destroy "${VM_NAME}" 2>/dev/null || true
+    sudo virsh undefine "${VM_NAME}" --nvram 2>/dev/null || true
+    echo "  Removed VM: ${VM_NAME}"
+  done
+fi
+
+if [[ -n "${SUSHY_PID_FILE:-}" ]] && [[ -f "${SUSHY_PID_FILE}" ]]; then
+  echo "Stopping sushy-emulator..."
+  kill "$(cat "${SUSHY_PID_FILE}")" 2>/dev/null || true
+  rm -f "${SUSHY_PID_FILE}"
+fi
+
+if [[ -n "${SUSHY_CONFIG_DIR:-}" ]] && [[ -d "${SUSHY_CONFIG_DIR}" ]]; then
+  rm -rf "${SUSHY_CONFIG_DIR}"
+fi
+
+if [[ -n "${SUSHY_PORT:-}" ]]; then
+  if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+    sudo firewall-cmd --remove-port="${SUSHY_PORT}/tcp" 2>/dev/null || true
+  else
+    sudo iptables -D INPUT -p tcp --dport "${SUSHY_PORT}" -j ACCEPT 2>/dev/null || true
+  fi
+fi
