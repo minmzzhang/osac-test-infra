@@ -99,37 +99,68 @@ fi
 # --- Step 4: Create virtual BMH VMs ---
 echo "==> Creating ${BMH_COUNT} virtual BMH VMs on network ${CT_NETWORK}..."
 
-if ! sudo virsh net-info "${CT_NETWORK}" &>/dev/null; then
+if ! virsh net-info "${CT_NETWORK}" &>/dev/null; then
   echo "ERROR: libvirt network '${CT_NETWORK}' not found." >&2
   echo "Available networks:" >&2
-  sudo virsh net-list --all >&2
+  virsh net-list --all >&2
   exit 1
 fi
+
+VM_DISK_DIR="/var/lib/libvirt/images"
+OVMF_CODE="/usr/share/OVMF/OVMF_CODE.secboot.fd"
+OVMF_VARS="/usr/share/OVMF/OVMF_VARS.fd"
 
 VM_NAMES=""
 for i in $(seq 1 "${BMH_COUNT}"); do
   VM_NAME="virtual-bmh-${CLONE_NAME}-${i}"
   MAC="52:54:00:bb:cc:$(printf '%02x' "${i}")"
+  DISK_PATH="${VM_DISK_DIR}/${VM_NAME}.qcow2"
+  VARS_PATH="${VM_DISK_DIR}/${VM_NAME}-VARS.fd"
 
   echo "  Creating VM: ${VM_NAME} (MAC: ${MAC})..."
-  sudo virt-install \
-    --name "${VM_NAME}" \
-    --ram 8192 \
-    --vcpus 4 \
-    --disk size=50 \
-    --network "network=${CT_NETWORK},mac=${MAC}" \
-    --boot uefi \
-    --noautoconsole \
-    --import \
-    --osinfo detect=on,require=off
+  qemu-img create -f qcow2 "${DISK_PATH}" 50G
+  cp "${OVMF_VARS}" "${VARS_PATH}"
 
+  virsh define /dev/stdin <<VMXML
+<domain type='kvm'>
+  <name>${VM_NAME}</name>
+  <memory unit='MiB'>8192</memory>
+  <vcpu>4</vcpu>
+  <os firmware='efi'>
+    <type arch='x86_64' machine='q35'>hvm</type>
+    <loader readonly='yes' type='pflash'>${OVMF_CODE}</loader>
+    <nvram>${VARS_PATH}</nvram>
+    <boot dev='network'/>
+    <boot dev='hd'/>
+  </os>
+  <features>
+    <acpi/>
+    <apic/>
+  </features>
+  <devices>
+    <disk type='file' device='disk'>
+      <driver name='qemu' type='qcow2'/>
+      <source file='${DISK_PATH}'/>
+      <target dev='vda' bus='virtio'/>
+    </disk>
+    <interface type='network'>
+      <mac address='${MAC}'/>
+      <source network='${CT_NETWORK}'/>
+      <model type='virtio'/>
+    </interface>
+    <console type='pty'/>
+  </devices>
+</domain>
+VMXML
+
+  virsh start "${VM_NAME}"
   VM_NAMES="${VM_NAMES:+${VM_NAMES} }${VM_NAME}"
 done
 
 echo "VMs created: ${VM_NAMES}"
 
 # --- Step 5: Discover gateway IP and VM UUIDs ---
-GW_IP=$(sudo virsh net-dumpxml "${CT_NETWORK}" | grep -oP "address='\K[^']+")
+GW_IP=$(virsh net-dumpxml "${CT_NETWORK}" | grep -oP "address='\K[^']+")
 echo "Gateway IP (host): ${GW_IP}"
 
 # Verify sushy-tools can see the VMs
@@ -151,7 +182,7 @@ i=0
 for VM_NAME in ${VM_NAMES}; do
   i=$((i + 1))
   MAC="52:54:00:bb:cc:$(printf '%02x' "${i}")"
-  VM_UUID=$(sudo virsh domuuid "${VM_NAME}")
+  VM_UUID=$(virsh domuuid "${VM_NAME}")
 
   echo "  ${VM_NAME}: UUID=${VM_UUID}, MAC=${MAC}"
 

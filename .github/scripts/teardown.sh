@@ -40,8 +40,8 @@ fi
 if [[ -n "${BMH_VM_NAMES:-}" ]]; then
   echo "Cleaning up virtual BMH VMs..."
   for VM_NAME in ${BMH_VM_NAMES}; do
-    sudo virsh destroy "${VM_NAME}" 2>/dev/null || true
-    sudo virsh undefine "${VM_NAME}" --nvram 2>/dev/null || true
+    virsh destroy "${VM_NAME}" 2>/dev/null || true
+    virsh undefine "${VM_NAME}" --nvram 2>/dev/null || true
     echo "  Removed VM: ${VM_NAME}"
   done
 fi
