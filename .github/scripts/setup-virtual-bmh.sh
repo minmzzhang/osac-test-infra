@@ -63,7 +63,11 @@ if ! ${VIRSH} net-info "${CT_NETWORK}" &>/dev/null; then
   exit 1
 fi
 
-GW_IP=$(${VIRSH} net-dumpxml "${CT_NETWORK}" | grep -oP "address='\K[^']+")
+GW_IP=$(${VIRSH} net-dumpxml "${CT_NETWORK}" | python3 -c "
+import sys, xml.etree.ElementTree as ET
+root = ET.parse(sys.stdin).getroot()
+print(root.find('.//ip').get('address'))
+")
 echo "Gateway IP (host): ${GW_IP}"
 
 # --- Step 3: Install and start sushy-tools ---
