@@ -16,6 +16,7 @@
 #   osac           Install osac CLI (fulfillment-service)
 #   cluster-tool   Install and configure cluster-tool for local CI mode
 #   vault          Install Vault CLI
+#   grpcurl        Install grpcurl
 #   verify         Show installed versions and storage info
 #
 # Options:
@@ -57,7 +58,7 @@ while [[ $# -gt 0 ]]; do
             sed -n '2,/^[^#]/{ /^#/s/^# \?//p }' "$0"
             exit 0
             ;;
-        packages|runner-user|services|oc|osac|cluster-tool|vault|verify)
+        packages|runner-user|services|oc|osac|cluster-tool|vault|grpcurl|verify)
             STEPS+=("$1")
             shift
             ;;
@@ -71,7 +72,7 @@ done
 
 # Default: run all steps
 if [[ ${#STEPS[@]} -eq 0 ]]; then
-    STEPS=(packages runner-user services oc osac cluster-tool vault verify)
+    STEPS=(packages runner-user services oc osac cluster-tool vault grpcurl verify)
 fi
 
 ###############################################################################
@@ -548,6 +549,33 @@ install_vault() {
 }
 
 ###############################################################################
+# Step: grpcurl
+###############################################################################
+install_grpcurl() {
+    echo "==> Installing grpcurl..."
+
+    local version="1.9.3"
+
+    if command -v grpcurl &>/dev/null && [[ "$(grpcurl --version 2>&1)" == *"${version}"* ]]; then
+        echo "    grpcurl already installed: $(grpcurl --version)"
+        return 0
+    fi
+
+    local rpm="grpcurl_${version}_linux_amd64.rpm"
+    local url="https://github.com/fullstorydev/grpcurl/releases/download/v${version}/${rpm}"
+    local sha256="6315dff469ce9ba4aedb39f1b830bfdd276a155095d51129393579a62c8190ab"
+    local tmp
+    tmp=$(mktemp -d)
+    trap 'rm -rf "${tmp}"' RETURN
+
+    echo "    Downloading grpcurl v${version}..."
+    curl -sL -o "${tmp}/${rpm}" "${url}"
+    echo "${sha256}  ${tmp}/${rpm}" | sha256sum -c -
+    dnf install -y "${tmp}/${rpm}"
+    echo "    grpcurl installed: $(grpcurl --version)"
+}
+
+###############################################################################
 # Step: verify
 ###############################################################################
 run_verify() {
@@ -581,6 +609,7 @@ run_verify() {
     _check "skopeo"         "skopeo --version"
     _check "osac"           "osac version"
     _check "vault"          "vault --version"
+    _check "grpcurl"        "grpcurl --version"
     _check "jq"             "jq --version"
     _check "ansible-builder" "ansible-builder --version"
 
@@ -629,6 +658,7 @@ should_run oc            && install_oc
 should_run osac          && install_osac
 should_run cluster-tool  && setup_cluster_tool
 should_run vault         && install_vault
+should_run grpcurl       && install_grpcurl
 should_run verify        && run_verify
 
 echo ""
