@@ -161,8 +161,17 @@ for TARGET in "${TARGETS[@]}"; do
     SKIPPED_TARGETS=$((SKIPPED_TARGETS + 1))
     continue
   fi
+  # select() on type/field shape first, same reasoning as the discovery
+  # items above: a malformed entry's `.id` being null would otherwise
+  # become the literal string "null" via `tostring` (not an error), and a
+  # malformed/missing `.updated_at` would silently sort as "always too old"
+  # against `select(.updated_at >= $since)` rather than being excluded for
+  # the right reason.
   IDS=$(jq --arg repo "${REPO}" --arg since "${SINCE}" \
-    '[.workflow_runs[]? | select(.updated_at >= $since) | {run_id: (.id | tostring), repo: $repo}]' "${RESP_FILE}")
+    '[.workflow_runs[]?
+      | select(type == "object" and (.id | type) == "number" and (.updated_at | type) == "string")
+      | select(.updated_at >= $since)
+      | {run_id: (.id | tostring), repo: $repo}]' "${RESP_FILE}")
   RUNS=$(jq -cn --argjson a "${RUNS}" --argjson b "${IDS}" '$a + $b')
 done
 
