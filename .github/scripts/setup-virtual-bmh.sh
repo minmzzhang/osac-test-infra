@@ -108,7 +108,8 @@ echo "sushy-emulator running (PID $(cat "${SUSHY_PID_FILE}"))."
 # --- Step 4: Create virtual BMH VMs ---
 echo "==> Creating ${BMH_COUNT} virtual BMH VMs on network ${CT_NETWORK}..."
 
-VM_DISK_DIR="/var/lib/libvirt/images"
+VM_DISK_DIR="${RUNNER_TEMP:-/tmp}/virtual-bmh-disks"
+mkdir -p "${VM_DISK_DIR}"
 OVMF_CODE="/usr/share/OVMF/OVMF_CODE.secboot.fd"
 OVMF_VARS="/usr/share/OVMF/OVMF_VARS.fd"
 
