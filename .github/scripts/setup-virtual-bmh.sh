@@ -51,7 +51,7 @@ echo "Ironic is active."
 
 # --- Step 2: Install and start sushy-tools ---
 echo "==> Installing sushy-tools..."
-uv tool install --with libvirt-python sushy-tools 2>&1
+pip install --quiet sushy-tools libvirt-python 2>&1
 
 mkdir -p "${SUSHY_CONFIG_DIR}"
 cat > "${SUSHY_CONFIG_DIR}/sushy-emulator.conf" <<SEOF
