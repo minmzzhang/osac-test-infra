@@ -217,7 +217,17 @@ jobs:
           echo "notify-message=${NOTIFY_MESSAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Report findings
-        if: steps.scan.outputs.flagged-count != '0'
+        # always(): a bare condition implicitly ANDs with success() of every
+        # prior step in the job, so if "Upload combined redacted logs" fails
+        # *after* findings were already detected, incident reporting would
+        # otherwise be skipped too -- exactly when it matters most. Gate on
+        # steps.scan.outcome explicitly rather than relying on always() alone,
+        # so this doesn't also fire (and blow up on a missing SUMMARY_JSONL)
+        # if the scan step itself never got that far.
+        if: >
+          always() &&
+          steps.scan.outcome == 'success' &&
+          steps.scan.outputs.flagged-count != '0'
         env:
           # This repo's own token is enough here: the tracking issue is
           # always created/updated in this repo, regardless of which repo

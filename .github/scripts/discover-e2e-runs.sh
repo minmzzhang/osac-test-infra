@@ -49,10 +49,18 @@ TARGETS=(
 # window ever exceeds 100, deliberately deferred rather than fixed here.
 echo "::group::Discover cross-repo callers"
 DISCOVER_RESP="${OUTPUT_DIR}/discover.json"
-HTTP_CODE=$(curl -sL -o "${DISCOVER_RESP}" -w '%{http_code}' \
+# `if ! VAR=$(...)`, not a plain assignment: a curl *transport* failure
+# (DNS, connection refused/reset, TLS) isn't exempt from `set -e` just
+# because we're deliberately not using --fail (that only covers curl not
+# treating HTTP 4xx/5xx as failure) - an unguarded assignment would still
+# trip errexit and kill the script before status.env ever gets written.
+if ! HTTP_CODE=$(curl -sL -o "${DISCOVER_RESP}" -w '%{http_code}' \
+  --connect-timeout 10 --max-time 30 \
   -H "Authorization: Bearer ${GH_TOKEN}" \
   -H "Accept: application/vnd.github+json" \
-  "${GITHUB_API_URL}/search/code?q=${GITHUB_REPOSITORY}%2F.github%2Fworkflows%2Fe2e-vmaas+org:osac-project&per_page=100")
+  "${GITHUB_API_URL}/search/code?q=${GITHUB_REPOSITORY}%2F.github%2Fworkflows%2Fe2e-vmaas+org:osac-project&per_page=100"); then
+  HTTP_CODE="curl-transport-error"
+fi
 # Distinct from a single target's own run-listing call failing below: this
 # means every OTHER repo's runs were never even attempted this time, so it
 # can't be inferred from SKIPPED_TARGETS staying 0 -- the caller must check
@@ -81,10 +89,14 @@ for TARGET in "${TARGETS[@]}"; do
   # (by created_at) first, so the plain per_page=100 fetch below still
   # comfortably includes such runs -- then filtered locally by `updated_at`
   # (GitHub's closest proxy for completion time) against the actual window.
-  HTTP_CODE=$(curl -sL -o "${RESP_FILE}" -w '%{http_code}' \
+  # Same reasoning as the discovery call above.
+  if ! HTTP_CODE=$(curl -sL -o "${RESP_FILE}" -w '%{http_code}' \
+    --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
-    "${GITHUB_API_URL}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=100")
+    "${GITHUB_API_URL}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=100"); then
+    HTTP_CODE="curl-transport-error"
+  fi
   if [[ "${HTTP_CODE}" != "200" ]]; then
     echo "::warning::Could not list runs for ${TARGET} (HTTP ${HTTP_CODE}), skipping."
     SKIPPED_TARGETS=$((SKIPPED_TARGETS + 1))
