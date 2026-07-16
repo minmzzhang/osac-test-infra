@@ -162,19 +162,23 @@ jobs:
             # *was* checked and *did* find something, it just couldn't
             # close the loop.
             [[ "${PURGE_OK}" != "true" ]] && PURGE_FAILURES=$((PURGE_FAILURES + 1))
+            # cp and jq are independent of each other -- the redacted-copy
+            # artifact vs. the tracking-issue summary entry -- so a failed
+            # cp must not skip the jq attempt too; only count this run once
+            # under PROCESSING_FAILURES even if both happen to fail.
+            local run_processing_failed=0
             mkdir -p "${ALL_REDACTED_DIR}/${slug}"
             if ! cp -r "${output_dir}/redacted/." "${ALL_REDACTED_DIR}/${slug}/"; then
               echo "::warning::Failed to copy redacted logs for run ${run_id} (${repo}) into the combined artifact -- leak was still detected and counted."
-              PROCESSING_FAILURES=$((PROCESSING_FAILURES + 1))
-              return 0
+              run_processing_failed=1
             fi
             if ! jq -c --arg run_id "${run_id}" --arg repo "${repo}" --arg count "${FINDINGS_COUNT}" --argjson purge_ok "${PURGE_OK}" \
               '{run_id: $run_id, repo: $repo, findings_count: ($count | tonumber), purge_ok: $purge_ok, findings: [.[] | {rule: .RuleID, file: .File, line: .StartLine}]}' \
               "${output_dir}/findings.json" >> "${SUMMARY_JSONL}"; then
               echo "::warning::Failed to append findings for run ${run_id} (${repo}) to the summary -- leak was still detected and counted."
-              PROCESSING_FAILURES=$((PROCESSING_FAILURES + 1))
-              return 0
+              run_processing_failed=1
             fi
+            [[ "${run_processing_failed}" -eq 1 ]] && PROCESSING_FAILURES=$((PROCESSING_FAILURES + 1))
           }
 
           # Process substitution (not a trailing pipe) so the loop runs in
