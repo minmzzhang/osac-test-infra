@@ -33,12 +33,12 @@ on:
         description: "OCI image containing the cluster-tool flavor"
         required: false
         type: string
-        default: "quay.io/rh-ee-ovishlit/cluster-snapshots:sno-4-19-ps"
+        default: "quay.io/osac-project/cluster-flavors:sno-4-22"
       flavor-name:
         description: "cluster-tool flavor name"
         required: false
         type: string
-        default: "sno-4-19-ps"
+        default: "sno-4-22"
       image-overrides:
         description: "JSON object mapping Helm value paths to image refs, e.g. '{\"service.images.service\":\"ghcr.io/osac-project/fulfillment-service:pr-123\"}'"
         required: false
@@ -271,7 +271,8 @@ jobs:
           exec 9>"${FLAVOR_LOCK}"
           flock --shared 9
           sudo python3 /usr/local/bin/cluster-tool boot \
-            --flavor "${FLAVOR_NAME}" --name "${CLONE_NAME}" 9>&-
+            --flavor "${FLAVOR_NAME}" --name "${CLONE_NAME}" \
+            --pull-secret "${RUNNER_TEMP}/pull-secret.json" 9>&-
           exec 9>&-
 
           echo "Cluster clone '${CLONE_NAME}' booted."
@@ -348,51 +349,6 @@ jobs:
           podman build --no-cache ${BUILD_ARGS} -t "${E2E_IMAGE}" -f Containerfile .
           rm -f ./osac-cli-bin
 
-      - name: Prepare cluster prerequisites
-        env:
-          KUBECONFIG: ${{ runner.temp }}/kubeconfig
-        run: |
-          # On a freshly booted sno64withdisk cluster (bare OpenShift, no OSAC),
-          # three cluster-level prerequisites are needed before setup.sh can
-          # succeed. These are normally baked into OSAC snapshot flavors by
-          # snapshot_lib.py during snapshot creation.
-
-          # 1. Wait for CatalogSource to be READY (operators depend on it)
-          echo "Waiting for CatalogSource redhat-operators to be READY..."
-          oc wait --for=jsonpath='{.status.connectionState.lastObservedState}'=READY \
-            catalogsource/redhat-operators -n openshift-marketplace --timeout=300s
-          echo "CatalogSource is READY."
-
-          # 2. Patch OVN masquerade subnet to avoid networking conflicts
-          echo "Patching OVN masquerade subnet to 169.254.0.0/17..."
-          oc patch networks.operator.openshift.io cluster --type=merge \
-            -p '{"spec":{"defaultNetwork":{"ovnKubernetesConfig":{"gatewayConfig":{"ipv4":{"internalMasqueradeSubnet":"169.254.0.0/17"}}}}}}'
-          oc delete pod -n openshift-network-operator -l name=network-operator
-          echo "Waiting 180s for OVN to stabilize..."
-          sleep 180
-          oc rollout status ds/ovnkube-node -n openshift-ovn-kubernetes --timeout=300s
-          echo "OVN rollout complete."
-
-          # 3. Apply KubeletConfig to increase maxPods to 500
-          echo "Applying KubeletConfig (maxPods: 500)..."
-          cat <<'KUBELET_EOF' | oc apply -f -
-          apiVersion: machineconfiguration.openshift.io/v1
-          kind: KubeletConfig
-          metadata:
-            name: set-master-max-pods
-          spec:
-            machineConfigPoolSelector:
-              matchLabels:
-                pools.operator.machineconfiguration.openshift.io/master: ""
-            kubeletConfig:
-              maxPods: 500
-          KUBELET_EOF
-          echo "Waiting for MCP master to finish updating (node will reboot on SNO)..."
-          oc wait --for=condition=Updated mcp/master --timeout=600s
-          echo "Waiting 180s for MCP to settle..."
-          sleep 180
-          echo "Cluster prerequisites applied."
-
       - name: Install infrastructure operators
         env:
           KUBECONFIG: ${{ runner.temp }}/kubeconfig
@@ -427,6 +383,13 @@ jobs:
           git clone --recurse-submodules --depth 1 --branch "${INSTALLER_REF}" \
             "https://github.com/${INSTALLER_REPO}.git" "${INSTALLER_DIR}"
           cd "${INSTALLER_DIR}"
+
+          # OLM Subscriptions need a working CatalogSource to resolve operators.
+          # After snapshot boot the marketplace pods may still be reconnecting.
+          echo "Waiting for CatalogSource redhat-operators to be READY..."
+          oc wait --for=jsonpath='{.status.connectionState.lastObservedState}'=READY \
+            catalogsource/redhat-operators -n openshift-marketplace --timeout=300s
+          echo "CatalogSource is READY."
 
           # Phase 1: Install OLM operators
           make install-operators VALUES_FILE=values/vmaas-ci/values.yaml
