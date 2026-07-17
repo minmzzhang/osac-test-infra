@@ -266,7 +266,6 @@ if [[ -n "${GITHUB_ENV:-}" ]]; then
   echo "BMH_DISK_DIR=${VM_DISK_DIR}" >> "${GITHUB_ENV}"
   echo "SUSHY_PID_FILE=${SUSHY_PID_FILE}" >> "${GITHUB_ENV}"
   echo "SUSHY_CONFIG_DIR=${SUSHY_CONFIG_DIR}" >> "${GITHUB_ENV}"
-  echo "SUSHY_PORT=${SUSHY_PORT}" >> "${GITHUB_ENV}"
 fi
 
 echo "==> Virtual BMH setup complete. ${BMH_COUNT} hosts available."

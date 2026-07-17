@@ -65,11 +65,3 @@ fi
 if [[ -n "${SUSHY_CONFIG_DIR:-}" ]] && [[ -d "${SUSHY_CONFIG_DIR}" ]]; then
   rm -rf "${SUSHY_CONFIG_DIR}"
 fi
-
-if [[ -n "${SUSHY_PORT:-}" ]]; then
-  if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
-    sudo firewall-cmd --remove-port="${SUSHY_PORT}/tcp" 2>/dev/null || true
-  else
-    sudo iptables -D INPUT -p tcp --dport "${SUSHY_PORT}" -j ACCEPT 2>/dev/null || true
-  fi
-fi
