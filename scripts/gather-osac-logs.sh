@@ -106,6 +106,21 @@ oc get certificates -n "${E2E_NAMESPACE}" -o yaml > "${ARTIFACT_DIR}/certificate
 oc get routes -n "${E2E_NAMESPACE}" -o wide > "${ARTIFACT_DIR}/routes.txt" 2>&1 || true
 oc get routes -n keycloak -o wide > "${ARTIFACT_DIR}/routes-keycloak.txt" 2>&1 || true
 
+for ns in cert-manager openshift-machine-api osac-operators; do
+    if oc get namespace "${ns}" &>/dev/null; then
+        echo "Gathering logs from namespace ${ns}..."
+        collect_namespace_logs "${ns}" "${ARTIFACT_DIR}/${ns}"
+    fi
+done
+
+echo "Collecting OLM operator status..."
+mkdir -p "${ARTIFACT_DIR}/olm"
+oc get subscriptions -A -o yaml > "${ARTIFACT_DIR}/olm/subscriptions.yaml" 2>&1 || true
+oc get csv -A -o wide > "${ARTIFACT_DIR}/olm/csv.txt" 2>&1 || true
+oc get installplan -A -o wide > "${ARTIFACT_DIR}/olm/installplans.txt" 2>&1 || true
+oc get catalogsource -n openshift-marketplace -o yaml > "${ARTIFACT_DIR}/olm/catalogsources.yaml" 2>&1 || true
+oc get pods -n openshift-marketplace -o wide > "${ARTIFACT_DIR}/olm/marketplace-pods.txt" 2>&1 || true
+
 echo "Collecting node resource usage..."
 oc adm top node > "${ARTIFACT_DIR}/node-resources.txt" 2>&1 || true
 oc adm top pod -n "${E2E_NAMESPACE}" --sort-by=memory > "${ARTIFACT_DIR}/pod-resources.txt" 2>&1 || true

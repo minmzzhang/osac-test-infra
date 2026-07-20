@@ -33,3 +33,85 @@ podman rmi "${E2E_IMAGE}" 2>/dev/null || true
 if [[ -n "${COMPONENT_IMAGE:-}" ]]; then
   podman rmi "${COMPONENT_IMAGE}" 2>/dev/null || true
 fi
+
+# --- Clean up BMaaS virtual BMH resources ---
+# All paths are derived from CLONE_NAME so teardown works even if setup
+# failed before exporting state. When no matching resources exist, cleanup
+# is a no-op (VMaaS teardown unaffected).
+# NOTE: naming conventions here must match setup-virtual-bmh.sh.
+VIRSH="virsh -c qemu:///system"
+BMH_VM_PREFIX="virtual-bmh-${CLONE_NAME}-"
+BMH_VM_NAMES=$(${VIRSH} list --all --name 2>/dev/null | grep "^${BMH_VM_PREFIX}" || true)
+if [[ -n "${BMH_VM_NAMES}" ]]; then
+  echo "Cleaning up virtual BMH VMs..."
+  for VM_NAME in ${BMH_VM_NAMES}; do
+    ${VIRSH} destroy "${VM_NAME}" 2>/dev/null || true
+    ${VIRSH} undefine "${VM_NAME}" --nvram 2>/dev/null || true
+    echo "  Removed VM: ${VM_NAME}"
+  done
+fi
+
+BMH_POOL_NAME="bmh-${CLONE_NAME}"
+if ${VIRSH} pool-info "${BMH_POOL_NAME}" &>/dev/null; then
+  echo "Removing libvirt storage pool ${BMH_POOL_NAME}..."
+  ${VIRSH} pool-destroy "${BMH_POOL_NAME}" 2>/dev/null || true
+  ${VIRSH} pool-undefine "${BMH_POOL_NAME}" 2>/dev/null || true
+fi
+
+BMH_DISK_DIR="/tmp/virtual-bmh-disks-${CLONE_NAME}"
+if [[ -d "${BMH_DISK_DIR}" ]]; then
+  rm -rf "${BMH_DISK_DIR}"
+fi
+
+SUSHY_CONFIG_DIR="${HOME}/sushy-${CLONE_NAME}"
+SUSHY_PID_FILE="${SUSHY_CONFIG_DIR}/sushy.pid"
+SUSHY_PID=""
+if [[ -f "${SUSHY_PID_FILE}" ]]; then
+  SUSHY_PID=$(cat "${SUSHY_PID_FILE}")
+  echo "Stopping sushy-emulator (PID ${SUSHY_PID})..."
+  kill "${SUSHY_PID}" 2>/dev/null || true
+  for i in $(seq 1 10); do
+    if ! kill -0 "${SUSHY_PID}" 2>/dev/null; then
+      break
+    fi
+    if [[ "${i}" -eq 10 ]]; then
+      echo "  SIGTERM did not stop sushy-emulator, sending SIGKILL..."
+      kill -9 "${SUSHY_PID}" 2>/dev/null || true
+    fi
+    sleep 1
+  done
+  rm -f "${SUSHY_PID_FILE}"
+fi
+
+if [[ -d "${SUSHY_CONFIG_DIR}" ]]; then
+  rm -rf "${SUSHY_CONFIG_DIR}"
+fi
+
+# --- Verify BMaaS cleanup ---
+# Fail the job if critical resources leaked so we're notified early.
+BMH_LEAKED=false
+REMAINING_VMS=$(${VIRSH} list --all --name 2>/dev/null | grep "^${BMH_VM_PREFIX}" || true)
+if [[ -n "${REMAINING_VMS}" ]]; then
+  echo "ERROR: VMs still present after cleanup:" >&2
+  echo "${REMAINING_VMS}" >&2
+  BMH_LEAKED=true
+fi
+if ${VIRSH} pool-info "${BMH_POOL_NAME}" &>/dev/null; then
+  echo "ERROR: Storage pool '${BMH_POOL_NAME}' still present after cleanup" >&2
+  BMH_LEAKED=true
+fi
+if [[ -n "${SUSHY_PID}" ]] && kill -0 "${SUSHY_PID}" 2>/dev/null; then
+  echo "ERROR: sushy-emulator process still running (PID ${SUSHY_PID})" >&2
+  BMH_LEAKED=true
+fi
+if [[ -d "${BMH_DISK_DIR}" ]]; then
+  echo "ERROR: Disk directory '${BMH_DISK_DIR}' still present after cleanup" >&2
+  BMH_LEAKED=true
+fi
+if [[ -d "${SUSHY_CONFIG_DIR}" ]]; then
+  echo "ERROR: Sushy config directory '${SUSHY_CONFIG_DIR}' still present after cleanup" >&2
+  BMH_LEAKED=true
+fi
+if [[ "${BMH_LEAKED}" == "true" ]]; then
+  exit 1
+fi
