@@ -10,7 +10,7 @@ on:
       - '*.md'
       - 'docs/**'
   schedule:
-    - cron: "0 */12 * * *"
+    - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
       test-suite:
