@@ -233,15 +233,108 @@ find "${ARTIFACT_DIR}" \( -name "pods-describe.txt" -o -name "*.log" -o -name "*
     | xargs -0 sed -i -E 's/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/REDACTED_JWT/g' || true
 
 # Base64-encoded database passwords and API tokens (operator logs, AAP job stdout)
-find "${ARTIFACT_DIR}" -type f \( -name "*.log" -o -name "*.txt" -o -name "*.json" \) -print0 \
-    | xargs -0 sed -i -E \
-        -e 's/"password":\s*"[A-Za-z0-9+/=]{16,}"/"password": "REDACTED"/g' \
-        -e 's/"token":\s*"[A-Za-z0-9+/=]{16,}"/"token": "REDACTED"/g' \
-    || true
+# [^"]+ (not [A-Za-z0-9+/=]) so passwords with punctuation (@/%/#) are covered too.
+# find -exec succeeds on zero matches (unlike xargs); fail closed on sed errors.
+find "${ARTIFACT_DIR}" -type f \( -name "*.log" -o -name "*.txt" -o -name "*.json" \) \
+    -exec sed -i -E \
+        -e 's/"password":\s*"[^"]+"/"password": "REDACTED"/g' \
+        -e 's/"token":\s*"[^"]+"/"token": "REDACTED"/g' \
+        {} + || {
+    echo "ERROR: password/token redaction failed" >&2
+    exit 1
+}
 
 # Fulfillment: break-glass credentials in controller and grpc-server logs
-find "${ARTIFACT_DIR}" -name "pod-fulfillment-*.log" -print0 \
-    | xargs -0 sed -i -E 's/"break_glass_credentials":\{[^}]+\}/"break_glass_credentials":{"password":"REDACTED","username":"REDACTED"}/g' || true
+# (plaintext JSON form). Broader than pod-fulfillment-* so describe/event
+# dumps that copy the same payload are covered too.
+find "${ARTIFACT_DIR}" -type f \( -name "*.log" -o -name "*.txt" -o -name "*.json" \) \
+    -exec sed -i -E 's/"break_glass_credentials"\s*:\s*\{[^}]+\}/"break_glass_credentials":{"password":"REDACTED","username":"REDACTED"}/g' {} + || {
+    echo "ERROR: break-glass plaintext redaction failed" >&2
+    exit 1
+}
+
+# Fulfillment: break-glass credentials base64-encoded inside SQL DEBUG
+# parameters (e.g. tenants.data). The plaintext JSON redaction above never
+# sees these; the JWT redaction only matches three-segment eyJ.a.b tokens;
+# and the large-blob sweep below only kicks in at 500+ chars.
+#
+# Decode-based (not a base64-substring of the key name): embedding
+# "break_glass_credentials" at an arbitrary byte offset does not guarantee
+# a stable base64 substring, so we decode each quoted candidate and look
+# for the key in the plaintext. Without this, the failure-summary grep
+# (-C3 around "error") reprints those SQL lines into the GitHub Actions
+# job log (OSAC-1684).
+redact_break_glass_b64() {
+    # Paths as args: rewrite files in place. No args: stdin -> stdout.
+    python3 /dev/fd/3 "$@" 3<<'PY'
+import base64
+import re
+import sys
+from pathlib import Path
+
+B64_RE = re.compile(rb'"([A-Za-z0-9+/_-]{32,}={0,2})"')
+NEEDLE = b"break_glass_credentials"
+PLACEHOLDER = b'"REDACTED_BREAK_GLASS_B64"'
+
+
+def try_decode(raw):
+    s = raw.rstrip(b"=")
+    pad = b"=" * (-len(s) % 4)
+    candidate = s + pad
+    for dec in (
+        lambda v: base64.b64decode(v, validate=True),
+        lambda v: base64.b64decode(v, altchars=b"-_", validate=True),
+    ):
+        try:
+            return dec(candidate)
+        except Exception:
+            continue
+    return None
+
+
+def scrub(data):
+    def repl(match):
+        decoded = try_decode(match.group(1))
+        if decoded is not None and NEEDLE in decoded:
+            return PLACEHOLDER
+        return match.group(0)
+
+    return B64_RE.sub(repl, data)
+
+
+paths = sys.argv[1:]
+if not paths:
+    sys.stdout.buffer.write(scrub(sys.stdin.buffer.read()))
+else:
+    errors = []
+    for path in paths:
+        p = Path(path)
+        try:
+            original = p.read_bytes()
+        except OSError as exc:
+            print(f"ERROR: cannot read {p}: {exc}", file=sys.stderr)
+            errors.append(str(p))
+            continue
+        updated = scrub(original)
+        if updated != original:
+            try:
+                p.write_bytes(updated)
+            except OSError as exc:
+                print(f"ERROR: cannot write {p}: {exc}", file=sys.stderr)
+                errors.append(str(p))
+    if errors:
+        sys.exit(1)
+PY
+}
+
+if ! command -v python3 &>/dev/null; then
+    echo "ERROR: python3 is required to redact base64-encoded break-glass credentials" >&2
+    exit 1
+fi
+readarray -d '' b64_files < <(find "${ARTIFACT_DIR}" -type f \( -name "*.log" -o -name "*.txt" -o -name "*.json" \) -print0)
+if [[ ${#b64_files[@]} -gt 0 ]]; then
+    redact_break_glass_b64 "${b64_files[@]}" || exit 1
+fi
 
 # Broad sweep: .dockerconfigjson base64 blobs
 find "${ARTIFACT_DIR}" -type f \( -name "*.yaml" -o -name "*.json" \) -print0 \
@@ -264,6 +357,10 @@ find "${ARTIFACT_DIR}" -type f -name "*.log" -print0 \
 find "${ARTIFACT_DIR}" -type f -empty -delete || true
 
 # ── Failure Summary ─────────────────────────────────────────────────
+# Built only after redaction above. Written to the artifact for offline
+# debugging; a short pointer (not the full -C3 dump) goes to the job log
+# so a future redaction gap can't re-introduce secrets into GitHub Actions
+# console output the way OSAC-1684's scanner caught.
 
 FAILURE_SUMMARY="${ARTIFACT_DIR}/failure-summary.txt"
 {
@@ -272,19 +369,18 @@ found=0
 total_lines=0
 MAX_SUMMARY_LINES=1000
 while IFS= read -r -d '' f; do
-    [[ ${total_lines} -ge ${MAX_SUMMARY_LINES} ]] && break
+    remaining=$((MAX_SUMMARY_LINES - total_lines))
+    [[ ${remaining} -le 0 ]] && break
     matches=$(grep -inE --color=never -B1 -A3 \
         '\b(errors?|panick?|fatal|fail(ed|ure)?|unreachable)\b' "$f" 2>/dev/null \
         | grep -ivE '\b(fail(ed|ure)?|unreachable)=0\b') || continue
-    # Skip files where filtering removed all actual matches, leaving only context lines
     printf '%s\n' "$matches" | grep -qE '^[0-9]+:' || continue
     echo ""
     echo "--- ${f#"${ARTIFACT_DIR}"/} ---"
-    remaining=$((MAX_SUMMARY_LINES - total_lines))
     printf '%s\n' "$matches" | head -n "${remaining}"
     match_lines=$(printf '%s\n' "$matches" | wc -l)
     total_lines=$((total_lines + (match_lines < remaining ? match_lines : remaining)))
-    found=1
+    found=$((found + 1))
 done < <(find "${ARTIFACT_DIR}" -type f \( -name '*.log' -o -name '*.txt' \) \
     ! -name 'failure-summary.txt' -print0 | sort -z)
 if [[ ${total_lines} -ge ${MAX_SUMMARY_LINES} ]]; then
@@ -295,7 +391,11 @@ if [[ ${found} -eq 0 ]]; then
     echo "No error/panic/fatal/failed/unreachable patterns found in collected artifacts."
 fi
 echo "=== End Failure Summary ==="
-} | tee "${FAILURE_SUMMARY}"
+} > "${FAILURE_SUMMARY}"
+# Defense in depth: scrub any base64-encoded break-glass credentials
+# BEFORE anything from this file is echoed to the job console.
+redact_break_glass_b64 "${FAILURE_SUMMARY}" || exit 1
+echo "Failure summary written to ${FAILURE_SUMMARY} (${found} pattern group(s) found)"
 
 FILE_COUNT=$(find "${ARTIFACT_DIR}" -type f | wc -l)
 TOTAL_SIZE=$(du -sh "${ARTIFACT_DIR}" | cut -f1)
