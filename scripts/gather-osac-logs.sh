@@ -116,6 +116,21 @@ echo "Collecting cluster operator status..."
 oc get co > "${ARTIFACT_DIR}/clusteroperators.txt" 2>&1 || true
 oc get csv -n openshift-cnv -o wide > "${ARTIFACT_DIR}/cnv/csv.txt" 2>&1 || true
 
+echo "Collecting OLM marketplace diagnostics..."
+mkdir -p "${ARTIFACT_DIR}/marketplace"
+timeout 30s oc get catalogsource -n openshift-marketplace -o wide > "${ARTIFACT_DIR}/marketplace/catalogsources.txt" 2>&1 || true
+timeout 30s oc get catalogsource -n openshift-marketplace -o yaml > "${ARTIFACT_DIR}/marketplace/catalogsources.yaml" 2>&1 || true
+timeout 30s oc get pods -n openshift-marketplace -o wide > "${ARTIFACT_DIR}/marketplace/pods.txt" 2>&1 || true
+timeout 30s oc describe pods -n openshift-marketplace > "${ARTIFACT_DIR}/marketplace/pods-describe.txt" 2>&1 || true
+timeout 30s oc get events -n openshift-marketplace --sort-by=.lastTimestamp > "${ARTIFACT_DIR}/marketplace/events.txt" 2>&1 || true
+timeout 30s oc get subscriptions -A -o wide > "${ARTIFACT_DIR}/marketplace/subscriptions.txt" 2>&1 || true
+timeout 30s oc get installplans -A -o wide > "${ARTIFACT_DIR}/marketplace/installplans.txt" 2>&1 || true
+MARKETPLACE_PODS=$(timeout 30s oc get pods -n openshift-marketplace -o jsonpath='{.items[*].metadata.name}' 2>"${ARTIFACT_DIR}/marketplace/pod-discovery-errors.txt") || true
+for pod in ${MARKETPLACE_PODS}; do
+    { timeout 60s oc logs "${pod}" -n openshift-marketplace --all-containers --tail=200 > "${ARTIFACT_DIR}/marketplace/pod-${pod}.log" 2>&1 || true; } &
+done
+wait
+
 echo "Collecting storage diagnostics..."
 mkdir -p "${ARTIFACT_DIR}/storage"
 oc get pods -n openshift-storage -o wide > "${ARTIFACT_DIR}/storage/pods.txt" 2>&1 || true

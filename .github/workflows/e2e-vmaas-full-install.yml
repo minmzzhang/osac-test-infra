@@ -387,8 +387,19 @@ jobs:
           # OLM Subscriptions need a working CatalogSource to resolve operators.
           # After snapshot boot the marketplace pods may still be reconnecting.
           echo "Waiting for CatalogSource redhat-operators to be READY..."
-          oc wait --for=jsonpath='{.status.connectionState.lastObservedState}'=READY \
-            catalogsource/redhat-operators -n openshift-marketplace --timeout=300s
+          if ! oc wait --for=jsonpath='{.status.connectionState.lastObservedState}'=READY \
+            catalogsource/redhat-operators -n openshift-marketplace --timeout=300s; then
+            echo "::error::CatalogSource redhat-operators did not become READY within 300s"
+            echo "--- CatalogSource status ---"
+            timeout 30s oc get catalogsource -n openshift-marketplace -o wide || true
+            timeout 30s oc get catalogsource redhat-operators -n openshift-marketplace -o yaml || true
+            echo "--- Marketplace pods ---"
+            timeout 30s oc get pods -n openshift-marketplace -o wide || true
+            echo "--- Marketplace events ---"
+            timeout 30s oc get events -n openshift-marketplace --sort-by=.lastTimestamp || true
+            echo "(raw pod logs omitted from workflow output — see gathered artifacts)"
+            exit 1
+          fi
           echo "CatalogSource is READY."
 
           # Phase 1: Install OLM operators
