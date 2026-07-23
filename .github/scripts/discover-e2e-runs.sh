@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Discover every repo/workflow currently calling into the reusable e2e
 # workflows (this repo's own two, plus dynamic cross-repo discovery via code
-# search), then list their completed runs since a cutoff time (OSAC-1684).
+# search), then list their completed runs created since a cutoff time
+# (OSAC-1684). The GitHub workflow-runs API only filters by `created` (start
+# time), not completion/`updated_at`, so the lookback window is start-time
+# based -- see the per-target listing comment below.
 #
 # Usage: discover-e2e-runs.sh <lookback-hours> <output-dir>
 #
@@ -30,20 +33,25 @@ if ! [[ "${LOOKBACK_HOURS}" =~ ^[1-9][0-9]*$ ]]; then
 fi
 # Upper-bounded too, tied to the per_page=100-without-pagination limitation
 # already called out below: an arbitrarily large manual re-audit window
-# makes that deferred gap more likely to actually bite (more runs in-window
-# per target, silently truncated past the first 100). 168h (1 week) is a
+# makes that deferred gap more likely to actually bite (created= filter
+# returns more than 100 in-window runs per target). 168h (1 week) is a
 # generous ceiling for a manual catch-up re-scan, not a guarantee that any
-# single target stays under 100 runs within it -- just a sanity bound
-# against a fat-fingered input, since we can't derive a precise hour cap
-# from a run-count without knowing each target's actual run frequency.
+# single target stays under 100 in-window runs -- just a sanity bound
+# against a fat-fingered input. Targets over that are skipped (and
+# counted) rather than silently under-audited.
 if (( LOOKBACK_HOURS > 168 )); then
   echo "lookback-hours must be <= 168 (1 week) -- see per_page=100 pagination note below" >&2
   exit 2
 fi
 mkdir -p "${OUTPUT_DIR}"
 
+# created= is start-time based (GitHub has no updated_at filter), so a run
+# started before the window and finished inside it is invisible to us. The
+# default 27h lookback on a 24h schedule gives a 3h overlap -- enough to catch
+# runs up to ~3h long that started in the previous window. Jobs longer than
+# that are theoretically missed, but our longest E2E suites run ~2h.
 SINCE=$(date -u -d "${LOOKBACK_HOURS} hours ago" +%Y-%m-%dT%H:%M:%SZ)
-echo "Auditing runs completed since ${SINCE}..."
+echo "Auditing completed runs created since ${SINCE}..."
 
 # This repo's own two reusable workflows are always in scope -- workflow_run
 # (scan-e2e-logs.yml) only covers runs triggered directly here, so this audit
@@ -138,28 +146,38 @@ for TARGET in "${TARGETS[@]}"; do
   REPO="${TARGET%%:*}"
   WORKFLOW="${TARGET#*:}"
   RESP_FILE="${OUTPUT_DIR}/runs-resp.json"
-  # No `created=>` filter: that compares against a run's *start* time, so a
-  # long-running run started before the window but finished inside it would
-  # never match and would go permanently unaudited. Runs are returned newest
-  # (by created_at) first, so the plain per_page=100 fetch below still
-  # comfortably includes such runs -- then filtered locally by `updated_at`
-  # (GitHub's closest proxy for completion time) against the actual window.
-  # Same reasoning as the discovery call above.
+  # Filter by created at the API first so total_count is "completed runs
+  # started in the lookback window", not lifetime history. Without that,
+  # a total_count<=100 guard rejects every busy caller (hundreds of
+  # historical runs) before any local window filter can run -- which is
+  # what made the daily audit skip fulfillment-service/osac-aap/
+  # osac-installer/osac-operator entirely.
+  #
+  # GitHub only exposes a `created` filter here, not `updated_at`, so the
+  # window is start-time based. A run that started before SINCE and
+  # finished inside the window can be missed; with a daily 27h lookback
+  # that only matters for jobs longer than the 3h overlap, which we accept
+  # over the previous "skip the whole target" failure mode. Pagination is
+  # still deferred -- if a target ever exceeds 100 in-window runs, skip
+  # it loudly rather than silently truncating.
+  # -G + --data-urlencode: `created=>=...` must be form-encoded (`>=` /
+  # `:` in the timestamp); baking it into the URL path is easy to get wrong.
   if ! HTTP_CODE=$(curl -sL -o "${RESP_FILE}" -w '%{http_code}' \
     --connect-timeout 10 --max-time 30 \
     -H "Authorization: Bearer ${GH_TOKEN}" \
     -H "Accept: application/vnd.github+json" \
-    "${GITHUB_API_URL}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs?status=completed&per_page=100"); then
+    -G "${GITHUB_API_URL}/repos/${REPO}/actions/workflows/${WORKFLOW}/runs" \
+    --data-urlencode "status=completed" \
+    --data-urlencode "per_page=100" \
+    --data-urlencode "created=>=${SINCE}"); then
     HTTP_CODE="curl-transport-error"
   fi
   # Same "200 doesn't guarantee shape" reasoning as the discovery call above
   # -- an unexpected/missing .workflow_runs would otherwise become `[]` via
   # `?`, silently counting a target that actually has runs as cleanly
-  # audited instead of skipped. Same total_count > 100 reasoning too: this
-  # endpoint returns total_count alongside workflow_runs just like the
-  # search endpoint does, so it's exposed to the identical
-  # non-pagination gap if a single target has more than 100 completed runs
-  # within the lookback window.
+  # audited instead of skipped. total_count > 100 is now meaningful: the
+  # created= filter makes it an in-window count, so exceeding per_page
+  # without pagination is a real coverage gap for this target.
   # All-or-nothing on shape/type here too, same reasoning as the discovery
   # response: a select()-style per-item drop would leave one malformed run
   # silently missing from RUNS while this target still counts as cleanly
@@ -167,13 +185,13 @@ for TARGET in "${TARGETS[@]}"; do
   if [[ "${HTTP_CODE}" != "200" ]] \
     || ! jq -e '.workflow_runs | type == "array"' "${RESP_FILE}" >/dev/null 2>&1 \
     || ! jq -e '(.total_count | type) == "number" and .total_count >= 0 and .total_count <= 100' "${RESP_FILE}" >/dev/null 2>&1 \
-    || ! jq -e 'all(.workflow_runs[]?; type == "object" and (.id | type) == "number" and (.updated_at | type) == "string")' "${RESP_FILE}" >/dev/null 2>&1; then
-    echo "::warning::Could not list runs for ${TARGET} (HTTP ${HTTP_CODE}, unexpected response shape, malformed run item, or more than 100 runs), skipping."
+    || ! jq -e 'all(.workflow_runs[]?; type == "object" and (.id | type) == "number")' "${RESP_FILE}" >/dev/null 2>&1; then
+    echo "::warning::Could not list runs for ${TARGET} (HTTP ${HTTP_CODE}, unexpected response shape, malformed run item, or more than 100 in-window runs), skipping."
     SKIPPED_TARGETS=$((SKIPPED_TARGETS + 1))
     continue
   fi
-  IDS=$(jq --arg repo "${REPO}" --arg since "${SINCE}" \
-    '[.workflow_runs[]? | select(.updated_at >= $since) | {run_id: (.id | tostring), repo: $repo}]' "${RESP_FILE}")
+  IDS=$(jq --arg repo "${REPO}" \
+    '[.workflow_runs[]? | {run_id: (.id | tostring), repo: $repo}]' "${RESP_FILE}")
   RUNS=$(jq -cn --argjson a "${RUNS}" --argjson b "${IDS}" '$a + $b')
 done
 

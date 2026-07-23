@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       lookback-hours:
-        description: "Re-scan completed e2e runs updated (completed) in the last N hours"
+        description: "Re-scan completed e2e runs created in the last N hours (enter 1-168; start-time based; default 27h gives 3h overlap on a 24h schedule)"
         required: false
-        default: "25"
+        default: "27"
 
 concurrency:
   group: audit-workflow-logs
@@ -82,7 +82,7 @@ jobs:
         id: list
         env:
           GH_TOKEN: ${{ steps.vault.outputs.GH_ORG_TOKEN }}
-          LOOKBACK_HOURS: ${{ inputs.lookback-hours || '25' }}
+          LOOKBACK_HOURS: ${{ inputs.lookback-hours || '27' }}
         run: |
           OUTPUT_DIR="${RUNNER_TEMP}/discover"
           .github/scripts/discover-e2e-runs.sh "${LOOKBACK_HOURS}" "${OUTPUT_DIR}"
