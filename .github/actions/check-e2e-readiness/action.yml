@@ -1,0 +1,36 @@
+---
+name: Check e2e readiness
+description: >-
+  Fail unless the PR is ready for expensive e2e: fresh lgtm label, fresh
+  e2e-ready override label, or coderabbitai[bot] APPROVED on head (blocked
+  while a human still has CHANGES_REQUESTED). Human APPROVED does not unlock.
+  OSAC-3370 readiness gate for e2e callers.
+
+inputs:
+  pr-number:
+    description: Pull request number
+    required: true
+  head-sha:
+    description: PR head commit SHA that must be covered by CodeRabbit approval (if no unlock label)
+    required: true
+  github-token:
+    description: >-
+      Token with pull-requests:read, issues:read, and actions:read
+      (defaults to github.token). issues:read and actions:read are needed
+      for unlock-label freshness (issue events + workflow runs); on lookup
+      failure the action ignores labels and still evaluates CodeRabbit.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check e2e readiness
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        PR_NUMBER: ${{ inputs.pr-number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        GITHUB_API_URL: ${{ github.api_url }}
+      run: bash "${GITHUB_ACTION_PATH}/check-e2e-readiness.sh"

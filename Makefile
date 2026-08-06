@@ -114,3 +114,7 @@ gather-suite:
 	$(MAKE) -C $(INFRA_DIR) gather-$(SUITE) EXTRA_VARS='$(EXTRA_VARS)'
 
 redeploy-osac: destroy-osac deploy-osac
+
+.PHONY: test-e2e-readiness
+test-e2e-readiness:
+	bash .github/actions/check-e2e-readiness/check-e2e-readiness-test.sh
