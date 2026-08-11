@@ -2,8 +2,8 @@
 # OSAC-3370: decide whether a PR is ready for expensive e2e.
 #
 # Allow when (fail closed otherwise):
-#   1. fresh "lgtm" label (labeled at/after this head's first pull_request run), or
-#   2. fresh "e2e-ready" label (quiet override; same freshness), or
+#   1. "lgtm" label present (Prow removes on push), or
+#   2. "e2e-ready" label present (cleanup workflow removes on push), or
 #   3. coderabbitai[bot] APPROVED on head AND no outstanding human CHANGES_REQUESTED
 #
 # Human APPROVED reviews do NOT unlock e2e (untrusted for this cost gate).
@@ -36,38 +36,28 @@ labels_have_e2e_ready() {
   labels_have "$1" "e2e-ready"
 }
 
+# The /e2e-ready slash command applies the label via GITHUB_TOKEN, so the
+# actor is github-actions[bot]. Reject labels applied manually by humans
+# (triage users can add labels via UI/API, bypassing the command guards).
+E2E_READY_TRUSTED_ACTOR='github-actions[bot]'
+
+# Returns 0 if the most recent e2e-ready labeled event was applied by the
+# trusted automation actor (github-actions[bot]).
+# $1 = issue events JSON array (from /repos/{owner}/{repo}/issues/{number}/events)
+e2e_ready_applied_by_trusted_actor() {
+  local events_json="$1"
+  jq -e --arg who "${E2E_READY_TRUSTED_ACTOR}" '
+    [.[]
+      | select(.event == "labeled")
+      | select(.label.name == "e2e-ready")
+    ] | last
+    | . != null and .actor.login == $who
+  ' <<<"${events_json}" >/dev/null 2>&1
+}
+
 # Returns 0 if labels JSON includes lgtm.
 labels_have_lgtm() {
   labels_have "$1" "lgtm"
-}
-
-# Returns 0 if labeled_at >= head_seen_at (ISO-8601).
-# head_seen_at = when this head SHA first showed up in a pull_request run.
-label_is_fresh() {
-  local labeled_at="$1"
-  local head_seen_at="$2"
-  [[ -n "${labeled_at}" && -n "${head_seen_at}" ]] || return 1
-  jq -ne --arg a "${labeled_at}" --arg b "${head_seen_at}" '
-    ($a | fromdateiso8601) >= ($b | fromdateiso8601)
-  ' >/dev/null 2>&1
-}
-
-# Latest "labeled" event created_at for label name from issues events JSON.
-latest_label_labeled_at() {
-  local events_json="$1"
-  local name="$2"
-  jq -r --arg n "${name}" '
-    [.[]
-      | select(.event == "labeled")
-      | select(.label.name == $n)
-      | .created_at
-    ] | max // empty
-  ' <<<"${events_json}"
-}
-
-# Latest labeled_at for e2e-ready from issues events JSON.
-latest_e2e_ready_labeled_at() {
-  latest_label_labeled_at "$1" "e2e-ready"
 }
 
 # Returns 0 if any human reviewer's latest decision is CHANGES_REQUESTED.
@@ -113,22 +103,25 @@ coderabbit_approves_head() {
 }
 
 # Print allow reason to stdout, or return 1 if denied.
-# Args: labels_json reviews_json head_sha trust_e2e_ready[0|1] trust_lgtm[0|1]
-# trust_* default to 0 (fail closed): omit them and labels never unlock.
+# Args: labels_json reviews_json head_sha events_json
 decide_e2e_readiness() {
   local labels_json="$1"
   local reviews_json="$2"
   local head_sha="$3"
-  local trust_e2e_ready="${4:-0}"
-  local trust_lgtm="${5:-0}"
+  local events_json="${4:-[]}"
 
-  if [[ "${trust_lgtm}" == "1" ]] && labels_have_lgtm "${labels_json}"; then
-    echo "allowed: lgtm label present (fresh for head)"
+  if labels_have_lgtm "${labels_json}"; then
+    echo "allowed: lgtm label present"
     return 0
   fi
-  if [[ "${trust_e2e_ready}" == "1" ]] && labels_have_e2e_ready "${labels_json}"; then
-    echo "allowed: e2e-ready label present (fresh for head)"
-    return 0
+  if labels_have_e2e_ready "${labels_json}"; then
+    if e2e_ready_applied_by_trusted_actor "${events_json}"; then
+      echo "allowed: e2e-ready label present (applied by trusted actor)"
+      return 0
+    else
+      echo "denied: e2e-ready label present but applied by untrusted actor"
+      return 1
+    fi
   fi
   if coderabbit_approves_head "${reviews_json}" "${head_sha}"; then
     echo "allowed: APPROVED review on head from ${CODERABBIT_LOGIN}"
@@ -179,7 +172,6 @@ github_api_get_all() {
     local http curl_rc
 
     set +e
-    # Discard curl stderr: -sS DNS/connect errors can name GITHUB_API_URL hosts.
     http=$(curl -sS -D "${headers}" -o "${body}" -w '%{http_code}' \
       --connect-timeout 10 \
       --max-time 60 \
@@ -203,7 +195,6 @@ github_api_get_all() {
     jq -s 'add' "${out_file}" "${body}" > "${out_file}.next"
     mv "${out_file}.next" "${out_file}"
 
-    # Missing Link/rel=next is normal end-of-pages (must not fail under pipefail).
     page_url=$(
       tr -d '\r' < "${headers}" \
         | { grep -i '^link:' || true; } \
@@ -212,77 +203,11 @@ github_api_get_all() {
         | sed -n 's/.*<\([^>]*\)>.*/\1/p' \
         | head -1
     )
-    # Never send the bearer token to an off-origin Link: next URL.
     if [[ -n "${page_url}" && "${page_url}" != "${API}/"* ]]; then
       echo "::error::Refusing pagination next URL outside API origin for ${endpoint_name}"
       return 1
     fi
   done
-}
-
-# Earliest workflow_runs[].created_at across all pages of an actions/runs list
-# URL (object body, not a bare array). Prints ISO-8601 or empty; returns 1 on fetch error.
-earliest_workflow_run_created_at() {
-  local start_url="$1"
-  local page_url="${start_url}"
-  local page=0
-  local max_pages="${GITHUB_API_MAX_PAGES}"
-  local min_at=""
-
-  while [[ -n "${page_url}" ]]; do
-    page=$((page + 1))
-    if [[ ${page} -gt ${max_pages} ]]; then
-      echo "warning: too many pages for actions/runs (>${max_pages})" >&2
-      return 1
-    fi
-    local headers="${tmp}/runs.headers.${page}"
-    local body="${tmp}/runs.body.${page}"
-    local http curl_rc page_min
-
-    set +e
-    # Discard curl stderr: -sS DNS/connect errors can name GITHUB_API_URL hosts.
-    http=$(curl -sS -D "${headers}" -o "${body}" -w '%{http_code}' \
-      --connect-timeout 10 \
-      --max-time 60 \
-      -H "Authorization: Bearer ${GH_TOKEN}" \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "${page_url}" 2>/dev/null)
-    curl_rc=$?
-    set -e
-
-    if [[ ${curl_rc} -ne 0 || "${http}" != "200" ]]; then
-      echo "warning: failed to fetch actions/runs (HTTP ${http:-?} rc=${curl_rc:-?}, page=${page})" >&2
-      return 1
-    fi
-
-    page_min=$(jq -r '[(.workflow_runs // [])[].created_at] | min // empty' "${body}")
-    if [[ -n "${page_min}" ]]; then
-      if [[ -z "${min_at}" ]]; then
-        min_at="${page_min}"
-      else
-        min_at=$(jq -nr --arg a "${min_at}" --arg b "${page_min}" '
-          if ($a | fromdateiso8601) <= ($b | fromdateiso8601) then $a else $b end
-        ')
-      fi
-    fi
-
-    page_url=$(
-      tr -d '\r' < "${headers}" \
-        | { grep -i '^link:' || true; } \
-        | tr ',' '\n' \
-        | { grep 'rel="next"' || true; } \
-        | sed -n 's/.*<\([^>]*\)>.*/\1/p' \
-        | head -1
-    )
-    # Never send the bearer token to an off-origin Link: next URL.
-    if [[ -n "${page_url}" && "${page_url}" != "${API}/"* ]]; then
-      echo "warning: refusing pagination next URL outside API origin for actions/runs" >&2
-      return 1
-    fi
-  done
-
-  echo "${min_at}"
 }
 
 echo "::group::Fetch PR labels"
@@ -303,69 +228,26 @@ if ! github_api_get_all \
 fi
 echo "::endgroup::"
 
+echo "::group::Fetch issue events"
+if ! github_api_get_all \
+  "issues/events" \
+  "${API}/repos/${REPO}/issues/${PR_NUMBER}/events?per_page=100" \
+  "${tmp}/events.json"; then
+  exit 1
+fi
+echo "::endgroup::"
+
 labels_json="$(cat "${tmp}/labels.json")"
 reviews_json="$(cat "${tmp}/reviews.json")"
+events_json="$(cat "${tmp}/events.json")"
 
-trust_e2e_ready=0
-trust_lgtm=0
-need_freshness=0
-if labels_have_e2e_ready "${labels_json}" || labels_have_lgtm "${labels_json}"; then
-  need_freshness=1
-fi
-
-if [[ "${need_freshness}" -eq 1 ]]; then
-  echo "::group::Check unlock-label freshness vs head"
-  # Soft-fail: on lookup error, ignore labels and still evaluate CodeRabbit.
-  labeled_e2e=""
-  labeled_lgtm=""
-  head_seen_at=""
-  events_ok=0
-  if github_api_get_all \
-    "issues/events" \
-    "${API}/repos/${REPO}/issues/${PR_NUMBER}/events?per_page=100" \
-    "${tmp}/events.json"; then
-    events_ok=1
-    labeled_e2e="$(latest_label_labeled_at "$(cat "${tmp}/events.json")" "e2e-ready")"
-    labeled_lgtm="$(latest_label_labeled_at "$(cat "${tmp}/events.json")" "lgtm")"
-  else
-    echo "warning: could not fetch issue events; ignoring unlock labels"
-  fi
-
-  set +e
-  head_seen_at="$(earliest_workflow_run_created_at \
-    "${API}/repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=100")"
-  runs_rc=$?
-  set -e
-  if [[ ${runs_rc} -ne 0 ]]; then
-    head_seen_at=""
-    echo "warning: could not fetch workflow runs for head; ignoring unlock labels"
-  fi
-
-  echo "e2e-ready labeled_at=${labeled_e2e:-<none>} lgtm labeled_at=${labeled_lgtm:-<none>} head_seen_at=${head_seen_at:-<none>}"
-  if [[ "${events_ok}" -eq 1 && -n "${head_seen_at}" ]]; then
-    if labels_have_e2e_ready "${labels_json}" && label_is_fresh "${labeled_e2e}" "${head_seen_at}"; then
-      trust_e2e_ready=1
-      echo "e2e-ready label is fresh for this head"
-    elif labels_have_e2e_ready "${labels_json}"; then
-      echo "e2e-ready label not trusted for this head (stale or incomplete); ignoring"
-    fi
-    if labels_have_lgtm "${labels_json}" && label_is_fresh "${labeled_lgtm}" "${head_seen_at}"; then
-      trust_lgtm=1
-      echo "lgtm label is fresh for this head"
-    elif labels_have_lgtm "${labels_json}"; then
-      echo "lgtm label not trusted for this head (stale or incomplete); ignoring"
-    fi
-  fi
-  echo "::endgroup::"
-fi
-
-if reason=$(decide_e2e_readiness "${labels_json}" "${reviews_json}" "${HEAD_SHA}" "${trust_e2e_ready}" "${trust_lgtm}"); then
+if reason=$(decide_e2e_readiness "${labels_json}" "${reviews_json}" "${HEAD_SHA}" "${events_json}"); then
   echo "${reason}"
   exit 0
 fi
 
 echo "::error::E2E readiness gate: PR #${PR_NUMBER} is not ready for expensive CI at ${HEAD_SHA:0:7}."
-echo "::error::Need a CodeRabbit APPROVED review on this head, or a fresh \`lgtm\` or \`e2e-ready\` label."
+echo "::error::Need a CodeRabbit APPROVED review on this head, \`lgtm\` label, or \`e2e-ready\` label."
 if human_has_changes_requested "${reviews_json}"; then
   echo "::error::Note: a human requested changes — CodeRabbit approval alone does not unlock e2e until that is cleared."
 fi

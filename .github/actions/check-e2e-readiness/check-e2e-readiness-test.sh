@@ -71,7 +71,19 @@ REVIEWS_APPROVED_OLD='[
 ]'
 REVIEWS_NONE='[]'
 
-# Same submitted_at: higher review id must win (tie-breaker).
+# --- issue events fixtures ---
+EVENTS_E2E_READY_BY_BOT='[
+  {"event":"labeled","label":{"name":"e2e-ready"},"actor":{"login":"github-actions[bot]","type":"Bot"}}
+]'
+EVENTS_E2E_READY_BY_HUMAN='[
+  {"event":"labeled","label":{"name":"e2e-ready"},"actor":{"login":"bob","type":"User"}}
+]'
+EVENTS_E2E_READY_HUMAN_THEN_BOT='[
+  {"event":"labeled","label":{"name":"e2e-ready"},"actor":{"login":"bob","type":"User"}},
+  {"event":"labeled","label":{"name":"e2e-ready"},"actor":{"login":"github-actions[bot]","type":"Bot"}}
+]'
+EVENTS_NONE='[]'
+
 REVIEWS_HUMAN_SAME_SECOND_CR_WINS='[
   {"id":1,"submitted_at":"2026-01-02T00:00:00Z","state":"APPROVED","commit_id":"head-commit","author_association":"MEMBER","user":{"login":"alice","type":"User"}},
   {"id":2,"submitted_at":"2026-01-02T00:00:00Z","state":"CHANGES_REQUESTED","commit_id":"head-commit","author_association":"MEMBER","user":{"login":"alice","type":"User"}},
@@ -86,32 +98,19 @@ REVIEWS_BOT_SAME_SECOND_APPROVE_WINS='[
   {"id":2,"submitted_at":"2026-01-02T00:00:00Z","state":"APPROVED","commit_id":"head-commit","author_association":"NONE","user":{"login":"coderabbitai[bot]","type":"Bot"}}
 ]'
 
-EVENTS_LABELED='[
-  {"event":"labeled","created_at":"2026-01-01T00:00:00Z","label":{"name":"bug"}},
-  {"event":"labeled","created_at":"2026-01-02T12:00:00Z","label":{"name":"e2e-ready"}},
-  {"event":"labeled","created_at":"2026-01-02T13:00:00Z","label":{"name":"lgtm"}},
-  {"event":"unlabeled","created_at":"2026-01-02T11:00:00Z","label":{"name":"e2e-ready"}}
-]'
-
+# --- labels_have ---
 assert_rc "labels_have_e2e_ready yes" 0 labels_have_e2e_ready "${LABELS_E2E_READY}"
 assert_rc "labels_have_e2e_ready no" 1 labels_have_e2e_ready "${LABELS_WITHOUT}"
 assert_rc "labels_have_lgtm yes" 0 labels_have_lgtm "${LABELS_LGTM}"
 assert_rc "labels_have_lgtm no" 1 labels_have_lgtm "${LABELS_WITHOUT}"
 assert_rc "labels_have_e2e_ready empty" 1 labels_have_e2e_ready "${LABELS_EMPTY}"
 
-assert_eq "latest e2e-ready labeled_at" "2026-01-02T12:00:00Z" "$(latest_e2e_ready_labeled_at "${EVENTS_LABELED}")"
-assert_eq "latest lgtm labeled_at" "2026-01-02T13:00:00Z" "$(latest_label_labeled_at "${EVENTS_LABELED}" "lgtm")"
-assert_rc "label fresh after head" 0 label_is_fresh "2026-01-02T12:00:00Z" "2026-01-02T11:00:00Z"
-assert_rc "label stale before head" 1 label_is_fresh "2026-01-02T10:00:00Z" "2026-01-02T11:00:00Z"
-assert_rc "label fresh equal head" 0 label_is_fresh "2026-01-02T11:00:00Z" "2026-01-02T11:00:00Z"
-assert_rc "label missing labeled_at" 1 label_is_fresh "" "2026-01-02T11:00:00Z"
-assert_rc "label missing head_seen_at" 1 label_is_fresh "2026-01-02T12:00:00Z" ""
-assert_rc "label both timestamps missing" 1 label_is_fresh "" ""
-
+# --- human_has_changes_requested ---
 assert_rc "human_has_changes_requested yes" 0 human_has_changes_requested "${REVIEWS_BOT_WITH_HUMAN_CR}"
 assert_rc "human_has_changes_requested no (bot only)" 1 human_has_changes_requested "${REVIEWS_BOT_ONLY}"
 assert_rc "human_has_changes_requested yes (comment after CR)" 0 human_has_changes_requested "${REVIEWS_COMMENT_AFTER_CR_BOT_APPROVE}"
 
+# --- coderabbit_approves_head ---
 assert_rc "coderabbit empty head_sha" 1 coderabbit_approves_head "${REVIEWS_BOT_ONLY}" ""
 assert_rc "coderabbit approves bot only" 0 coderabbit_approves_head "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}"
 assert_rc "coderabbit blocked by human CR" 1 coderabbit_approves_head "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}"
@@ -127,48 +126,40 @@ assert_rc "coderabbit blocked by same-second human CR" 1 coderabbit_approves_hea
 assert_rc "coderabbit same-second higher id dismiss" 1 coderabbit_approves_head "${REVIEWS_BOT_SAME_SECOND_DISMISS_WINS}" "${HEAD_SHA}"
 assert_rc "coderabbit same-second higher id approve" 0 coderabbit_approves_head "${REVIEWS_BOT_SAME_SECOND_APPROVE_WINS}" "${HEAD_SHA}"
 
-# Fresh-label cases pass trust_*=1 explicitly (defaults are fail-closed 0).
-assert_rc "decide lgtm wins" 0 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1
-assert_eq "decide lgtm wins reason" \
-  "allowed: lgtm label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1)"
-assert_rc "decide e2e-ready wins" 0 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1
-assert_eq "decide e2e-ready wins reason" \
-  "allowed: e2e-ready label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1)"
-assert_rc "decide both labels" 0 decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1
-assert_eq "decide both labels prefers lgtm" \
-  "allowed: lgtm label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 1)"
-assert_rc "decide e2e-ready overrides human CR" 0 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" 1 1
-assert_eq "decide e2e-ready overrides human CR reason" \
-  "allowed: e2e-ready label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" 1 1)"
-assert_rc "decide lgtm overrides human CR" 0 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" 1 1
-assert_eq "decide lgtm overrides human CR reason" \
-  "allowed: lgtm label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" 1 1)"
-assert_rc "decide labels ignored when trust defaults" 1 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}"
-assert_rc "decide stale e2e-ready ignored" 1 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" 0 0
-assert_rc "decide stale lgtm ignored" 1 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}" 0 0
-assert_eq "decide fresh e2e-ready with stale lgtm" \
-  "allowed: e2e-ready label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" 1 0)"
-assert_eq "decide fresh lgtm with stale e2e-ready" \
-  "allowed: lgtm label present (fresh for head)" \
-  "$(decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" 0 1)"
-assert_rc "decide stale labels still allow CR" 0 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}" 0 0
-assert_eq "decide stale labels still allow CR reason" \
+# --- e2e_ready_applied_by_trusted_actor ---
+assert_rc "e2e-ready by bot trusted" 0 e2e_ready_applied_by_trusted_actor "${EVENTS_E2E_READY_BY_BOT}"
+assert_rc "e2e-ready by human untrusted" 1 e2e_ready_applied_by_trusted_actor "${EVENTS_E2E_READY_BY_HUMAN}"
+assert_rc "e2e-ready human then bot trusts last" 0 e2e_ready_applied_by_trusted_actor "${EVENTS_E2E_READY_HUMAN_THEN_BOT}"
+assert_rc "e2e-ready no events untrusted" 1 e2e_ready_applied_by_trusted_actor "${EVENTS_NONE}"
+
+# --- decide_e2e_readiness ---
+assert_rc "decide lgtm present" 0 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_eq "decide lgtm reason" \
+  "allowed: lgtm label present" \
+  "$(decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_NONE}")"
+assert_rc "decide e2e-ready by bot" 0 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_E2E_READY_BY_BOT}"
+assert_eq "decide e2e-ready by bot reason" \
+  "allowed: e2e-ready label present (applied by trusted actor)" \
+  "$(decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_E2E_READY_BY_BOT}")"
+assert_rc "decide e2e-ready by human denied" 1 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_E2E_READY_BY_HUMAN}"
+assert_eq "decide e2e-ready by human reason" \
+  "denied: e2e-ready label present but applied by untrusted actor" \
+  "$(decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_E2E_READY_BY_HUMAN}")"
+assert_rc "decide both labels prefers lgtm" 0 decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_eq "decide both labels prefers lgtm reason" \
+  "allowed: lgtm label present" \
+  "$(decide_e2e_readiness "${LABELS_BOTH}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_NONE}")"
+assert_rc "decide lgtm overrides human CR" 0 decide_e2e_readiness "${LABELS_LGTM}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_rc "decide e2e-ready by bot overrides human CR" 0 decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" "${EVENTS_E2E_READY_BY_BOT}"
+assert_rc "decide CR alone wins" 0 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_eq "decide CR alone reason" \
   "allowed: APPROVED review on head from coderabbitai[bot]" \
-  "$(decide_e2e_readiness "${LABELS_E2E_READY}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}" 0 0)"
-assert_rc "decide CR alone wins" 0 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}"
-assert_eq "decide CR alone wins reason" \
-  "allowed: APPROVED review on head from coderabbitai[bot]" \
-  "$(decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}")"
-assert_rc "decide CR blocked by human CR" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}"
-assert_rc "decide denied human approve" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_HUMAN_APPROVED}" "${HEAD_SHA}"
-assert_rc "decide denied old CR approve" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_APPROVED_OLD}" "${HEAD_SHA}"
-assert_rc "decide denied other bot" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_OTHER_BOT_APPROVED}" "${HEAD_SHA}"
+  "$(decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_ONLY}" "${HEAD_SHA}" "${EVENTS_NONE}")"
+assert_rc "decide CR blocked by human CR" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_BOT_WITH_HUMAN_CR}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_rc "decide denied no signals" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_NONE}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_rc "decide denied human approve" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_HUMAN_APPROVED}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_rc "decide denied old CR approve" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_APPROVED_OLD}" "${HEAD_SHA}" "${EVENTS_NONE}"
+assert_rc "decide denied other bot" 1 decide_e2e_readiness "${LABELS_WITHOUT}" "${REVIEWS_OTHER_BOT_APPROVED}" "${HEAD_SHA}" "${EVENTS_NONE}"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"

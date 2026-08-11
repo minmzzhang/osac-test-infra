@@ -1,6 +1,7 @@
 ---
-# Remove stale e2e unlock labels (lgtm, e2e-ready) on new push.
-name: Remove e2e unlock labels on new push
+# Remove e2e-ready label on new push (stale after head changes).
+# lgtm is handled by Prow; e2e-ready needs explicit cleanup.
+name: Remove e2e-ready label on new push
 on:
   pull_request_target:
     types: [synchronize]
@@ -8,157 +9,18 @@ on:
 
 jobs:
   remove-label:
-    if: >-
-      contains(github.event.pull_request.labels.*.name, 'e2e-ready') ||
-      contains(github.event.pull_request.labels.*.name, 'lgtm')
+    if: contains(github.event.pull_request.labels.*.name, 'e2e-ready')
     runs-on: ubuntu-latest
-    # Serialize with slash-command /e2e-ready label mutations on the same PR.
-    concurrency:
-      group: e2e-unlock-labels-${{ github.event.pull_request.number }}
-      cancel-in-progress: false
     permissions:
-      actions: read
-      contents: read
       pull-requests: write
     steps:
-      - name: Remove stale unlock labels for head
+      - name: Remove stale e2e-ready label
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-
-          UNLOCK_LABELS=(lgtm e2e-ready)
-
-          label_present() {
-            local name="$1"
-            gh api "repos/${REPO}/issues/${PR_NUMBER}/labels" \
-              | jq -e --arg n "${name}" '[.[].name] | index($n) != null' >/dev/null
-          }
-
-          # gh --jq does not accept --arg; use jq after fetch when needed.
-          fetch_labeled_at() {
-            local name="$1"
-            local times rc
-            set +e
-            times=$(gh api --paginate \
-              "repos/${REPO}/issues/${PR_NUMBER}/events?per_page=100" \
-              --jq ".[] | select(.event == \"labeled\" and .label.name == \"${name}\") | .created_at")
-            rc=$?
-            set -e
-            [[ ${rc} -eq 0 ]] || return "${rc}"
-            printf '%s\n' "${times}" | sort | tail -1
-          }
-
-          fetch_head_seen_at() {
-            local times rc
-            set +e
-            times=$(gh api --paginate \
-              "repos/${REPO}/actions/runs?head_sha=${HEAD_SHA}&event=pull_request&per_page=100" \
-              --jq '.workflow_runs[].created_at')
-            rc=$?
-            set -e
-            [[ ${rc} -eq 0 ]] || return "${rc}"
-            printf '%s\n' "${times}" | sort | head -1
-          }
-
-          wait_for_head_seen_at() {
-            local seen=""
-            for _ in $(seq 1 30); do
-              set +e
-              seen=$(fetch_head_seen_at)
-              local rc=$?
-              set -e
-              if [[ ${rc} -ne 0 ]]; then
-                echo "warning: workflow runs lookup failed while waiting" >&2
-                return 1
-              fi
-              if [[ -n "${seen}" ]]; then
-                echo "${seen}"
-                return 0
-              fi
-              echo "Waiting for pull_request run at ${HEAD_SHA:0:7} before cleanup..." >&2
-              sleep 2
-            done
-            echo ""
-            return 0
-          }
-
-          freshness_keep() {
-            # Keep when proven fresh. Empty labeled_at while label present → keep
-            # (timeline lag). Empty head_seen_at after wait → strip. API fail → keep.
-            local name="$1"
-            local labeled_at="$2"
-            local head_seen_at="$3"
-            echo "${name}: labeled_at=${labeled_at:-<none>} head_seen_at=${head_seen_at:-<none>} head=${HEAD_SHA:0:7}"
-            if [[ -z "${labeled_at}" ]]; then
-              echo "${name}: no labeled event yet (label present); keeping."
-              return 0
-            fi
-            if [[ -z "${head_seen_at}" ]]; then
-              echo "${name}: no pull_request run for head after wait; treating as stale."
-              return 1
-            fi
-            if jq -ne --arg a "${labeled_at}" --arg b "${head_seen_at}" \
-                '($a | fromdateiso8601) >= ($b | fromdateiso8601)' >/dev/null; then
-              echo "${name}: fresh for current head; keeping."
-              return 0
-            fi
-            return 1
-          }
-
-          set +e
-          HEAD_SEEN_AT=$(wait_for_head_seen_at)
-          runs_rc=$?
-          set -e
-          if [[ ${runs_rc} -ne 0 ]]; then
-            echo "Freshness lookup failed; keeping unlock labels."
-            exit 0
-          fi
-
-          REMOVED=()
-          for name in "${UNLOCK_LABELS[@]}"; do
-            if ! label_present "${name}"; then
-              continue
-            fi
-            set +e
-            LABELED_AT=$(fetch_labeled_at "${name}")
-            labeled_rc=$?
-            set -e
-            if [[ ${labeled_rc} -ne 0 ]]; then
-              echo "${name}: labeled_at lookup failed; keeping."
-              continue
-            fi
-            if freshness_keep "${name}" "${LABELED_AT}" "${HEAD_SEEN_AT}"; then
-              continue
-            fi
-
-            # Re-check before remove (re-label race).
-            if ! label_present "${name}"; then
-              continue
-            fi
-            set +e
-            LABELED_AT=$(fetch_labeled_at "${name}")
-            labeled_rc=$?
-            HEAD_SEEN_AT=$(fetch_head_seen_at)
-            runs_rc=$?
-            set -e
-            if [[ ${labeled_rc} -ne 0 || ${runs_rc} -ne 0 ]]; then
-              echo "${name}: re-check failed; keeping."
-              continue
-            fi
-            if freshness_keep "${name}" "${LABELED_AT}" "${HEAD_SEEN_AT}"; then
-              continue
-            fi
-
-            gh pr edit "${PR_NUMBER}" -R "${REPO}" --remove-label "${name}"
-            REMOVED+=("${name}")
-          done
-
-          if [[ ${#REMOVED[@]} -gt 0 ]]; then
-            labels_fmt=$(printf '`%s` ' "${REMOVED[@]}")
-            gh pr comment "${PR_NUMBER}" -R "${REPO}" \
-              --body "Removed ${labels_fmt}due to new commits. Expensive e2e needs a fresh \`lgtm\` label, CodeRabbit \`APPROVED\` on the updated head, or \`/e2e-ready\`."
-          fi
+          gh pr edit "${PR_NUMBER}" -R "${REPO}" --remove-label "e2e-ready"
+          gh pr comment "${PR_NUMBER}" -R "${REPO}" \
+            --body "Removed \`e2e-ready\` due to new commits. Re-run \`/e2e-ready\` or get \`lgtm\` / CodeRabbit approval to unlock expensive e2e."

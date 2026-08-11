@@ -302,11 +302,6 @@ Both flavors accept `test-suite`/`test-filter` inputs and output JUnit XML to `r
 - `.github/workflows/ok-to-test-label-cleanup.yml` — Removes the `ok-to-test` label whenever new commits are pushed, requiring an org member to re-approve
 - Tests run in container with Vault secrets injection
 
-**E2E readiness gate (OSAC-3370)**:
-- Callers fail expensive e2e until unlocked: CodeRabbit `APPROVED` on head, or fresh `lgtm` (quiet `e2e-ready` override also works)
-- `/e2e-ready` applies the quiet `e2e-ready` override label (not the primary path)
-- `.github/actions/check-e2e-readiness/` — Cheap gate: fresh `lgtm` / `e2e-ready`, or `coderabbitai[bot]` APPROVED on head (blocked while a human still has `CHANGES_REQUESTED`). Human APPROVED does not unlock
-- `.github/workflows/e2e-ready-label-cleanup.yml` — Removes stale `lgtm` / `e2e-ready` on new pushes
 
 ### Monitoring Workflows
 
