@@ -193,6 +193,176 @@ def test_resolve_path_rejects_traversal() -> None:
         )
 
 
+_FAKE_JWT = (
+    "eyJhbGciOiJub25lIn0."
+    "eyJzdWIiOiJ0ZXN0LXVzZXIiLCJuYW1lIjoiZXhhbXBsZSJ9."
+    "fakesig"
+)
+
+
+def _decoded_finding(
+    secret: str,
+    file_field: str,
+    *,
+    start_col: int = 1,
+    end_col: int = 5,
+    depth: int = 2,
+    encoding: str = "base64",
+) -> dict:
+    return {
+        "Secret": secret,
+        "File": file_field,
+        "StartLine": 1,
+        "EndLine": 1,
+        "StartColumn": start_col,
+        "EndColumn": end_col,
+        "Tags": [f"decoded:{encoding}", f"decode-depth:{depth}"],
+        "RuleID": "jwt",
+    }
+
+
+def test_embedded_b64_in_mixed_json_string() -> None:
+    """AAP jobs-page analog: b64 wrapper inside mixed stdout, not a whole field."""
+    inner = json.dumps({"access_token": _FAKE_JWT}, separators=(",", ":")).encode()
+    outer = base64.b64encode(inner)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "jobs-page-1.json"
+        # One minified line; quoted value is NOT pure b64 (prefix/suffix text).
+        target.write_bytes(
+            b'{"keep":"VISIBLE","results":[{"stdout":"begin ' + outer + b' end"}]}'
+        )
+        redact.redact_tree(
+            [_decoded_finding(_FAKE_JWT, "/scan/jobs-page-1.json", depth=2)],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(outer not in published, f"wrapper still present: {published!r}")
+        _assert(_FAKE_JWT.encode() not in published, "jwt still present")
+        _assert(b"VISIBLE" in published, "unrelated JSON field was wiped")
+        _assert(b"begin [REDACTED] end" in published, f"marker placement: {published!r}")
+
+
+def test_decoded_depth2_columns_do_not_nibble() -> None:
+    """Depth>=2 columns are parent-buffer coords; must not punch KEEP prefix."""
+    secret = b"ABCDEFGHIJKLMNOPQRSTUVWX"
+    encoded = base64.b64encode(secret)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        # Columns 1-4 would wipe KEEP if applied blindly.
+        target.write_bytes(b"KEEP " + encoded + b"\n")
+        redact.redact_tree(
+            [
+                _decoded_finding(
+                    secret.decode("ascii"),
+                    "/scan/app.log",
+                    start_col=1,
+                    end_col=4,
+                    depth=2,
+                )
+            ],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(published.startswith(b"KEEP "), f"prefix nibbled: {published!r}")
+        _assert(encoded not in published, "wrapper not wiped")
+        _assert(b"[REDACTED]" in published, "marker missing")
+
+
+def test_decoded_depth1_verified_columns_wipe_wrapper() -> None:
+    """Depth-1 columns that actually bound the wrapper still wipe it."""
+    secret = b"ABCDEFGHIJKLMNOPQRSTUVWX"
+    encoded = base64.b64encode(secret)
+    prefix = b'{"x":"'
+    suffix = b'"}'
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        target.write_bytes(prefix + encoded + suffix)
+        start_col = len(prefix) + 1
+        end_col = len(prefix) + len(encoded)
+        redact.redact_tree(
+            [
+                _decoded_finding(
+                    secret.decode("ascii"),
+                    "/scan/app.log",
+                    start_col=start_col,
+                    end_col=end_col,
+                    depth=1,
+                )
+            ],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(encoded not in published, f"wrapper still present: {published!r}")
+        _assert(published.startswith(prefix), f"prefix lost: {published!r}")
+        _assert(published.endswith(suffix), f"suffix lost: {published!r}")
+
+
+def test_percent_encoded_secret() -> None:
+    """gitleaks decoded:percent runs must wipe when Secret is only percent-encoded."""
+    secret = b"ABCDEFGHIJKLMNOP"
+    # quote_from_bytes never percent-encodes letters; build a raw %XX run.
+    encoded = "".join(f"%{byte:02X}" for byte in secret).encode("ascii")
+    _assert(encoded.count(b"%") >= 8, f"fixture too short: {encoded!r}")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        target.write_bytes(b"token=" + encoded + b"\n")
+        redact.redact_tree(
+            [
+                _decoded_finding(
+                    secret.decode("ascii"),
+                    "/scan/app.log",
+                    depth=1,
+                    encoding="percent",
+                )
+            ],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(encoded not in published, f"percent blob still present: {published!r}")
+        _assert(secret not in published, "secret still present")
+        _assert(b"[REDACTED]" in published, "marker missing")
+
+
+def test_unrelated_b64_not_wiped() -> None:
+    """Peel only blobs that decode to a finding Secret — not every b64 token."""
+    secret = b"ABCDEFGHIJKLMNOPQRSTUVWX"
+    encoded = base64.b64encode(secret)
+    innocent = base64.b64encode(b"not-a-secret-value!!")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        target.write_bytes(b'innocent="' + innocent + b'" payload="' + encoded + b'"\n')
+        redact.redact_tree(
+            [_decoded_finding(secret.decode("ascii"), "/scan/app.log", depth=2)],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(innocent in published, f"unrelated b64 wiped: {published!r}")
+        _assert(encoded not in published, "secret wrapper not wiped")
+
+
+def test_hex_wrapper_of_json_containing_secret() -> None:
+    """decoded:hex of a JSON wrapper, not hex(secret) itself."""
+    inner = json.dumps({"access_token": _FAKE_JWT}, separators=(",", ":")).encode()
+    hexed = binascii.hexlify(inner)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        target.write_bytes(b"blob=" + hexed + b"\n")
+        redact.redact_tree(
+            [_decoded_finding(_FAKE_JWT, "/scan/app.log", depth=2, encoding="hex")],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(hexed not in published, f"hex wrapper still present: {published!r}")
+        _assert(_FAKE_JWT.encode() not in published, "jwt still present")
+        _assert(published.startswith(b"blob=[REDACTED]\n"), f"unexpected: {published!r}")
+
+
 def main() -> None:
     test_apply_ranges_single_pass()
     test_short_quoted_b64_when_path_unresolved()
@@ -200,6 +370,12 @@ def main() -> None:
     test_hex_encoded_secret_when_path_unresolved()
     test_hex_encoded_secret_mixed_case_when_path_unresolved()
     test_resolve_path_rejects_traversal()
+    test_embedded_b64_in_mixed_json_string()
+    test_decoded_depth2_columns_do_not_nibble()
+    test_decoded_depth1_verified_columns_wipe_wrapper()
+    test_percent_encoded_secret()
+    test_unrelated_b64_not_wiped()
+    test_hex_wrapper_of_json_containing_secret()
     print("redact_test.py: ok")
 
 
