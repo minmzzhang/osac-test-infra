@@ -64,6 +64,21 @@ on:
         required: false
         type: string
         default: ""
+      test-source:
+        description: "Where to run pytest from: test-infra (this repo, default) or osac"
+        required: false
+        type: string
+        default: "test-infra"
+      test-repository:
+        description: "GitHub repo (owner/name) to checkout for e2e tests when test-source is osac"
+        required: false
+        type: string
+        default: "osac-project/osac"
+      test-ref:
+        description: "Git ref of test-repository when test-source is osac"
+        required: false
+        type: string
+        default: "main"
       components:
         description: >-
           JSON array of components to build from source and load onto the cluster, e.g.
@@ -131,6 +146,23 @@ jobs:
           repository: ${{ inputs.test-infra-repository || github.repository }}
           ref: ${{ inputs.test-infra-ref || '' }}
           persist-credentials: false
+
+      - name: Checkout e2e tests from osac
+        if: inputs.test-source == 'osac'
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: ${{ inputs.test-repository }}
+          ref: ${{ inputs.test-ref }}
+          sparse-checkout: tests
+          sparse-checkout-cone-mode: true
+          path: __osac-tests
+          persist-credentials: false
+
+      - name: Overlay e2e tests onto workspace
+        if: inputs.test-source == 'osac'
+        run: |
+          bash .github/scripts/overlay-osac-tests.sh __osac-tests
+          rm -rf __osac-tests
 
       - name: Validate and bootstrap
         id: setup
@@ -668,6 +700,23 @@ jobs:
             exit 1
           fi
           echo "url=http://${ROUTE_HOST}" >> "$GITHUB_OUTPUT"
+      - name: Compute test path prefix
+        env:
+          TEST_SOURCE: ${{ inputs.test-source }}
+        run: |
+          case "${TEST_SOURCE}" in
+            osac)
+              echo "TEST_PATH_PREFIX=tests/e2e" >> "${GITHUB_ENV}"
+              ;;
+            test-infra|"")
+              echo "TEST_PATH_PREFIX=tests" >> "${GITHUB_ENV}"
+              ;;
+            *)
+              echo "::error::test-source must be 'osac' or 'test-infra', got '${TEST_SOURCE}'"
+              exit 1
+              ;;
+          esac
+
       - name: Run E2E tests
         id: test
         env:
@@ -680,9 +729,9 @@ jobs:
         run: |
           KUBECONFIG_PATH="$RUNNER_TEMP/kubeconfig"
 
-          TEST_ARGS="tests/"
+          TEST_ARGS="${TEST_PATH_PREFIX}/"
           if [ -n "${TEST_SUITE}" ]; then
-            TEST_ARGS="tests/${TEST_SUITE}/"
+            TEST_ARGS="${TEST_PATH_PREFIX}/${TEST_SUITE}/"
           fi
 
           FILTER_ARGS=""

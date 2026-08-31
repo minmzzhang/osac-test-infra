@@ -1,0 +1,74 @@
+name: E2E overlay contract
+
+# Cheap checks for the OSAC-3593 dual-source overlay. No cluster.
+# Catches the hard-cutover failure mode (overlaying osac pyproject.toml onto
+# test-infra's uv.lock) and layout drift before any live e2e run.
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/e2e-bmaas-full-install.yml"
+      - ".github/workflows/e2e-caas-full-install.yml"
+      - ".github/workflows/e2e-vmaas-full-install.yml"
+      - ".github/workflows/e2e-overlay-contract.yml"
+      - ".github/scripts/overlay-osac-tests.sh"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Containerfile"
+  merge_group:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  overlay-from-osac:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout test-infra
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Checkout osac tests
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          repository: osac-project/osac
+          ref: main
+          sparse-checkout: tests
+          sparse-checkout-cone-mode: true
+          path: __osac-tests
+          persist-credentials: false
+
+      - name: Overlay and check contract
+        run: |
+          bash .github/scripts/overlay-osac-tests.sh __osac-tests
+          rm -rf __osac-tests
+          test -d tests/e2e/vmaas
+          test -d tests/e2e/bmaas
+          test -d tests/e2e/caas
+          test -d tests/e2e/catalog
+          test -d tests/e2e/storage
+          test -d tests/e2e/references
+          test -d tests/core
+          test -f tests/conftest.py
+          grep -q 'name = "osac-test-infra"' pyproject.toml
+          python3 -m compileall -q tests
+
+  default-no-overlay:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout test-infra
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Assert harness-local layout
+        run: |
+          test -d tests/vmaas
+          test ! -d tests/e2e
+          grep -q 'name = "osac-test-infra"' pyproject.toml
