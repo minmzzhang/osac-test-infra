@@ -15,15 +15,15 @@ on:
   workflow_dispatch:
     inputs:
       test-suite:
-        description: "Test suite (bmaas, or empty for all)"
+        description: "Suite relative to tests/e2e (bmaas/sanity, bmaas/regression, bmaas/serial, or bmaas for all). Default: bmaas/sanity"
         required: false
-        default: "bmaas"
+        default: "bmaas/sanity"
       test-filter:
-        description: "pytest -k filter"
+        description: "pytest -k filter (GHA always also excludes TestBmaasNetworking)"
         required: false
         default: ""
       test-marker:
-        description: "pytest -m marker (sanity, regression, or empty for all)"
+        description: "pytest -m marker (optional). Empty uses directory tiers from test-suite."
         required: false
         default: ""
       installer-ref:
@@ -60,17 +60,19 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-bmaas-full-install.yml
     with:
-      test-suite: ${{ inputs.test-suite || 'bmaas' }}
-      test-filter: ${{ inputs.test-filter || '' }}
-      # PR: sanity (lifecycle only). Schedule: regression (inventory exhaust).
-      # workflow_dispatch: honor input, or empty for full suite.
-      test-marker: >-
+      # Overlayed osac tests use directory tiers, not pytest markers.
+      # PR/merge_group: bmaas/sanity. Schedule: bmaas/serial. Dispatch: honor input.
+      test-suite: >-
         ${{
-          inputs.test-marker != '' && inputs.test-marker ||
-          (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'sanity' ||
-          github.event_name == 'schedule' && 'regression' ||
-          ''
+          inputs.test-suite != '' && inputs.test-suite ||
+          (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'bmaas/sanity' ||
+          github.event_name == 'schedule' && 'bmaas/serial' ||
+          'bmaas/sanity'
         }}
+      # Networking is Netris-lab only. Overlay of tests/e2e/bmaas would collect
+      # it from regression/; deselect so GHA matches lifecycle+inventory.
+      test-filter: ${{ inputs.test-filter && format('({0}) and not TestBmaasNetworking', inputs.test-filter) || 'not TestBmaasNetworking' }}
+      test-marker: ${{ inputs.test-marker || '' }}
       installer-ref: ${{ inputs.installer-ref || 'main' }}
       installer-repo: ${{ inputs.installer-repo || 'osac-project/osac' }}
       image-overrides: ${{ inputs.image-overrides || '{}' }}
