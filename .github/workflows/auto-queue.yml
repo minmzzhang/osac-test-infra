@@ -247,7 +247,10 @@ jobs:
               ineligible=true
             fi
 
-            reviews=$(gh api --paginate --slurp "repos/${REPO}/pulls/${pr}/reviews" | jq 'add // []')
+            if ! reviews=$(gh api --paginate --slurp "repos/${REPO}/pulls/${pr}/reviews" | jq 'add // []'); then
+              echo "::warning::Cannot read reviews for PR #${pr}; skipping"
+              continue
+            fi
             if human_cr_outstanding "${reviews}"; then
               ineligible=true
             fi
@@ -264,7 +267,8 @@ jobs:
               [[ -z "${review_id}" ]] && continue
               echo "Dismissing bot review ${review_id} on PR #${pr}"
               gh api "repos/${REPO}/pulls/${pr}/reviews/${review_id}/dismissals" \
-                -X PUT -f message="Auto-dismissed: bot Request changes do not block merge"
+                -X PUT -f message="Auto-dismissed: bot Request changes do not block merge" \
+                || echo "::warning::Cannot dismiss review ${review_id} on PR #${pr}"
             done < <(jq -r '
               .[]
               | select(.state == "CHANGES_REQUESTED")
@@ -275,7 +279,8 @@ jobs:
 
             if [[ "${has_auto}" == "false" ]]; then
               echo "Enabling auto-merge on PR #${pr}"
-              gh pr merge "$pr" --repo "${REPO}" --auto --rebase
+              gh pr merge "$pr" --repo "${REPO}" --auto --rebase \
+                || echo "::warning::Cannot enable auto-merge on PR #${pr}"
             fi
           done < <(echo "$prs" | jq -r '.[].number')
           echo "Scan complete."
