@@ -23,9 +23,13 @@ on:
 permissions:
   contents: read
 
-# No concurrency here. Callers already use e2e-start-fork-<head_sha>.
-# Nested job concurrency with that same group fails at setup on
-# workflow_call (same class of bug as e2e-on-label.yml).
+# Distinct from caller group e2e-start-fork-<sha> (osac wrapper). Nested
+# same-group concurrency fails at setup on workflow_call. github.event is
+# the caller's workflow_run payload for both native and reusable calls.
+
+concurrency:
+  group: e2e-start-fork-job-${{ github.event.workflow_run.head_sha || github.run_id }}
+  cancel-in-progress: false
 
 jobs:
   resolve-fork-pr:
