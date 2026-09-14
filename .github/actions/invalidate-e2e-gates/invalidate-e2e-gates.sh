@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Mark merge-required e2e-*-gate checks in_progress on HEAD_SHA unless all
 # three already passed on this SHA (manual workflow_dispatch and PR runs).
+#
+# Post only when THIS workflow run is on HEAD_SHA so the check binds to this
+# unlock suite. GitHub Actions ignores another workflow's check_suite_id;
+# unbound posts land on an unrelated suite (ok-to-test / netris / auto-queue).
+# /e2e-ready workflow_dispatch runs on main — skip rather than post unbound.
 
 set -euo pipefail
 
@@ -24,31 +29,29 @@ if [[ "${SKIP_IF_ALL_GREEN}" == "true" ]] && all_merge_e2e_gates_green; then
   exit 0
 fi
 
+own_suite=""
+run_sha=""
+run_json=""
+if [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+  run_json=$(gh api "repos/${REPO}/actions/runs/${GITHUB_RUN_ID}" 2>/dev/null || true)
+fi
+if [[ -n "${run_json}" ]]; then
+  run_sha=$(jq -r '.head_sha // empty' <<<"${run_json}")
+  own_suite=$(jq -r '.check_suite_id // empty' <<<"${run_json}")
+fi
+if [[ "${run_sha}" != "${HEAD_SHA}" || -z "${own_suite}" || "${own_suite}" == "null" ]]; then
+  echo "Skipping e2e-*-gate Checks API posts: this run is not on PR ${HEAD_SHA:0:7} (run sha=${run_sha:0:7}). Unbound posts land on unrelated suites."
+  exit 0
+fi
+
 summary=$(printf '%s\n\n%s\n\n%s' "${REASON}" \
   "Partial or missing gate success on this SHA; waiting for a fresh full-install run." \
   "See .github/e2e-readiness.md")
 
-HEAD_REPO=""
-HEAD_REF=""
-if [[ -n "${PR_NUMBER:-}" ]]; then
-  pr_json=$(gh api "repos/${REPO}/pulls/${PR_NUMBER}")
-  HEAD_REPO=$(jq -r '.head.repo.full_name // empty' <<<"${pr_json}")
-  HEAD_REF=$(jq -r '.head.ref // empty' <<<"${pr_json}")
-fi
-
 failed=0
 for gate in "${MERGE_E2E_GATE_NAMES[@]}"; do
   gate_details="${DETAILS_URL}"
-  gate_check_suite_id=""
-  if [[ -n "${PR_NUMBER:-}" ]]; then
-    run_json=$(find_gate_caller_pr_run "${gate}" "${HEAD_REPO}" "${HEAD_REF}" || true)
-    if [[ -n "${run_json}" && "${run_json}" != "null" ]]; then
-      run_id=$(jq -r '.id' <<<"${run_json}")
-      gate_details="${GITHUB_SERVER_URL:-https://github.com}/${REPO}/actions/runs/${run_id}"
-      gate_check_suite_id=$(gh api "repos/${REPO}/actions/runs/${run_id}" \
-        --jq '.check_suite_id // empty' 2>/dev/null || true)
-    fi
-  fi
+  gate_check_suite_id="${own_suite}"
   external_id=$(invalidate_gate_external_id "${gate}")
   payload=$(jq -n \
     --arg name "${gate}" \

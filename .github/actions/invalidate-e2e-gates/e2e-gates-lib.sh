@@ -212,8 +212,8 @@ complete_stale_in_progress_merge_gates() {
 }
 
 # Cancel orphan unlock API gate checks before native full-install runs.
-# e2e-on-label invalidate (main-branch) can post in_progress checks on the
-# wrong workflow suite until this PR merges.
+# Starters that are not on the PR SHA must not POST (unbound checks land on
+# unrelated suites); dismiss leftover orphans from older starters.
 dismiss_unlock_orphan_gate_checks() {
   local gate id completed_at title summary
 

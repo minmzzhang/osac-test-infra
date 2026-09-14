@@ -9,8 +9,9 @@
 # pull_request_target: fork PRs can manage runs/comments with base-repo token.
 # workflow_dispatch: GITHUB_TOKEN label events do not start other workflows, so
 # slash-command-handler dispatches the per-repo e2e-on-label.yml after applying
-# e2e-ready. Default workflow names are this repo's *-caller.yml files; osac
-# passes its caller filenames.
+# e2e-ready. That run is on main, so e2e-start must not POST e2e-*-gate checks
+# (unbound posts land on unrelated suites). Default workflow names are this
+# repo's *-caller.yml files; osac passes its caller filenames.
 name: E2E on unlock label
 
 on:

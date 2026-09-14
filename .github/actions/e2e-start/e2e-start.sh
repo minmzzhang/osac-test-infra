@@ -7,6 +7,12 @@
 # invalidate gates when every caller would skip rerun — those orphans block
 # merge after native gates pass (osac-project/osac#957).
 #
+# Cost-gate unlock labels are lgtm and e2e-ready only. ok-to-test is secrets
+# for fork PRs and must not start e2e or POST e2e-*-gate checks.
+# invalidate-e2e-gates posts only when this starter run is on the PR SHA;
+# /e2e-ready workflow_dispatch runs on main, so it must not POST (those
+# checks land on unrelated suites such as ok-to-test cleanup).
+#
 # Env:
 #   GH_TOKEN, REPO, PR_NUMBER
 #   EVENT_HEAD_SHA     optional; skip if PR head moved
@@ -19,6 +25,16 @@ set -euo pipefail
 TRIGGER_LABEL="${TRIGGER_LABEL:-e2e-ready}"
 SKIP_LABEL_CHECK="${SKIP_LABEL_CHECK:-false}"
 WORKFLOWS="${WORKFLOWS:-e2e-vmaas-full-install-caller.yml,e2e-bmaas-full-install-caller.yml,e2e-caas-full-install-caller.yml}"
+
+if [[ "${SKIP_LABEL_CHECK}" != "true" ]]; then
+  case "${TRIGGER_LABEL}" in
+    lgtm|e2e-ready) ;;
+    *)
+      echo "${TRIGGER_LABEL} is not a cost-gate unlock label; skipping start and not posting e2e-*-gate checks."
+      exit 0
+      ;;
+  esac
+fi
 
 # Returns 0 if the fetched PR JSON is still open.
 pr_is_open() {
@@ -556,6 +572,8 @@ fi
   fi
   if [[ ${#RERUN_WF[@]} -eq 0 && $((SKIPPED + PENDING)) -gt 0 ]]; then
     echo "- Skipped gate invalidation (full-install already active or in-flight)."
+  elif [[ ${#RERUN_WF[@]} -gt 0 ]]; then
+    echo "- Checks API e2e-*-gate posts only if this starter run is on the PR SHA (not /e2e-ready dispatch on main)."
   fi
   if [[ ${STALE} -gt 0 ]]; then
     echo "- Head moved or label withdrawn (no rerun): ${STALE}"
