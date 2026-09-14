@@ -2,16 +2,17 @@
 # OSAC-3370: replay pull_request e2e runs after an unlock (label or CodeRabbit).
 # Called from .github/actions/e2e-start (and e2e-on-label.yml).
 #
-# Probe skip-vs-rerun before posting in_progress e2e-*-gate checks. A second
-# unlock (lgtm while CodeRabbit full-install is already running) must not
-# invalidate gates when every caller would skip rerun — those orphans block
-# merge after native gates pass (osac-project/osac#957).
+# Probe skip-vs-rerun before replaying full-install runs. A second unlock
+# (lgtm while CodeRabbit full-install is already running) must not POST
+# in_progress e2e-*-gate checks — those orphans block merge (osac#957) and
+# GitHub groups unbound posts under unrelated suites (auto-queue, ok-to-test).
 #
 # Cost-gate unlock labels are lgtm and e2e-ready only. ok-to-test is secrets
 # for fork PRs and must not start e2e or POST e2e-*-gate checks.
-# invalidate-e2e-gates posts only when this starter run is on the PR SHA;
-# /e2e-ready workflow_dispatch runs on main, so it must not POST (those
-# checks land on unrelated suites such as ok-to-test cleanup).
+# Never POST Checks API e2e-*-gate placeholders from this starter. GitHub
+# Checks have no pending status; posting in_progress makes them the required
+# check. Leave required gates unreported (pending) until native full-install
+# e2e-*-gate jobs report.
 #
 # Env:
 #   GH_TOKEN, REPO, PR_NUMBER
@@ -528,7 +529,7 @@ if [[ ${#RERUN_WF[@]} -eq 0 ]]; then
   echo "No full-install replay needed; skipping e2e-*-gate invalidation."
 else
   dismiss_unlock_orphan_gate_checks || true
-  bash "${lib_dir}/invalidate-e2e-gates.sh"
+  echo "Skipping e2e-*-gate Checks API posts; native full-install jobs report required gates (pending until they start)."
   for i in "${!RERUN_WF[@]}"; do
     set +e
     rerun_queued_pr_run "${RERUN_WF[$i]}" "${RERUN_ID[$i]}"
@@ -573,7 +574,7 @@ fi
   if [[ ${#RERUN_WF[@]} -eq 0 && $((SKIPPED + PENDING)) -gt 0 ]]; then
     echo "- Skipped gate invalidation (full-install already active or in-flight)."
   elif [[ ${#RERUN_WF[@]} -gt 0 ]]; then
-    echo "- Checks API e2e-*-gate posts only if this starter run is on the PR SHA (not /e2e-ready dispatch on main)."
+    echo "- Did not POST e2e-*-gate Checks API checks (native jobs report; required gates stay pending until then)."
   fi
   if [[ ${STALE} -gt 0 ]]; then
     echo "- Head moved or label withdrawn (no rerun): ${STALE}"

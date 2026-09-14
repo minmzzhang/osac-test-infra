@@ -212,8 +212,8 @@ complete_stale_in_progress_merge_gates() {
 }
 
 # Cancel orphan unlock API gate checks before native full-install runs.
-# Starters that are not on the PR SHA must not POST (unbound checks land on
-# unrelated suites); dismiss leftover orphans from older starters.
+# Starters must not POST e2e-*-gate Checks API placeholders (they land on
+# auto-queue / ok-to-test as in_progress required checks). Dismiss leftovers.
 dismiss_unlock_orphan_gate_checks() {
   local gate id completed_at title summary
 
