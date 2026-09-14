@@ -16,7 +16,8 @@ leaves jwt-shaped fragments (CaaS jobs-page-1.json: 6→4→2 leftovers).
 
 Wipe strategy: quoted/assigned b64 fields, then any remaining b64/hex/
 percent *token* whose peel contains a finding Secret (outermost wrapper),
-then plaintext/hex(secret), then verified depth-1 columns only.
+then plaintext/hex(secret), compact JWTs when a jwt finding exists, then
+verified depth-1 columns only.
 
 All wipe targets are computed against each file's pristine bytes, then
 applied in one pass so earlier replacements cannot shift later offsets.
@@ -39,7 +40,9 @@ _MAX_DECODE_DEPTH = 5
 
 # gitleaks jwt Secret values sometimes include trailing backslashes copied
 # from JSON string escapes in the scanned line (CaaS run 30568135525).
-_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+_JWT_PATTERN = r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"
+_JWT_RE = re.compile(_JWT_PATTERN)
+_JWT_RE_B = re.compile(_JWT_PATTERN.encode())
 
 # Match gitleaks default Base64 candidate floor ([\w/+-]{16,}={0,2}).
 # Longer floors (e.g. 40) miss 16-39-char quoted fields when resolve_path
@@ -330,6 +333,24 @@ def plaintext_secret_ranges(content: bytes, secrets: list[bytes]) -> list[tuple[
     return ranges
 
 
+def findings_need_jwt_wipe(findings: list[dict], secrets: list[bytes]) -> bool:
+    """True when a jwt rule fired or a Secret variant is already compact-JWT."""
+    for finding in findings:
+        if str(finding.get("RuleID") or "").lower() == "jwt":
+            return True
+    return any(_JWT_RE_B.search(secret) for secret in secrets)
+
+
+def jwt_token_ranges(content: bytes) -> list[tuple[int, int]]:
+    """Half-open spans of compact JWTs in file bytes.
+
+    Decoded jwt findings often have Secret=payload JSON (or a parent-buffer
+    column span). The compact token stays in AAP extra_vars / kubeconfig YAML
+    and re-triggers gitleaks after column-nibble passes (CaaS run 34106916773).
+    """
+    return [(match.start(), match.end()) for match in _JWT_RE_B.finditer(content)]
+
+
 def hex_encoded_secret_ranges(content: bytes, secrets: list[bytes]) -> list[tuple[int, int]]:
     """Half-open spans of hex-encoded Secret bytes (gitleaks decoded:hex).
 
@@ -560,6 +581,8 @@ def redact_tree(findings: list[dict], redacted_dir: pathlib.Path) -> None:
             ranges.extend(percent_encoded_secret_ranges(content, secrets))
             ranges.extend(plaintext_secret_ranges(content, secrets))
             ranges.extend(hex_encoded_secret_ranges(content, secrets))
+        if findings_need_jwt_wipe(findings, secrets):
+            ranges.extend(jwt_token_ranges(content))
         ranges.extend(location_ranges(content, pending_cols.get(path, {})))
         ranges.extend(
             verified_decoded_column_ranges(

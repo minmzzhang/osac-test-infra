@@ -345,6 +345,43 @@ def test_unrelated_b64_not_wiped() -> None:
         _assert(encoded not in published, "secret wrapper not wiped")
 
 
+def test_caas_jobs_page_decoded_payload_leaves_no_compact_jwt() -> None:
+    """CaaS leftover: Secret is decoded jwt payload; compact jwt sits in extra_vars.
+
+    Depth-2 columns 1-4 would nibble the JSON prefix (summa[REDACTED]...) if
+    applied as file bytes. Compact jwt must still be wiped; prefix must stay.
+    """
+    payload_b64 = _FAKE_JWT.split(".")[1]
+    payload = base64.urlsafe_b64decode(payload_b64 + "==")
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "jobs-page-1.json"
+        prefix = b'{"count":1,"results":[{"summary_fields":{"foo":1},"extra_vars":"'
+        body = b"token: " + _FAKE_JWT.encode() + b"\\nkubeconfig: ignored"
+        suffix = b'"}]}'
+        target.write_bytes(prefix + body + suffix)
+        redact.redact_tree(
+            [
+                _decoded_finding(
+                    payload.decode("ascii"),
+                    "/scan/jobs-page-1.json",
+                    start_col=1,
+                    end_col=4,
+                    depth=2,
+                )
+            ],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(
+            published.startswith(b'{"count":1'),
+            f"JSON prefix nibbled: {published[:40]!r}",
+        )
+        _assert(_FAKE_JWT.encode() not in published, "compact jwt still present")
+        _assert(b"eyJ" not in published, f"jwt fragment left: {published!r}")
+        _assert(b"[REDACTED]" in published, "marker missing")
+
+
 def test_hex_wrapper_of_json_containing_secret() -> None:
     """decoded:hex of a JSON wrapper, not hex(secret) itself."""
     inner = json.dumps({"access_token": _FAKE_JWT}, separators=(",", ":")).encode()
@@ -375,6 +412,7 @@ def main() -> None:
     test_decoded_depth1_verified_columns_wipe_wrapper()
     test_percent_encoded_secret()
     test_unrelated_b64_not_wiped()
+    test_caas_jobs_page_decoded_payload_leaves_no_compact_jwt()
     test_hex_wrapper_of_json_containing_secret()
     print("redact_test.py: ok")
 
