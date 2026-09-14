@@ -634,6 +634,9 @@ jobs:
           [[ "${RUNS_TRUNCATED}" == "true" ]] && NOTIFY_PARTS+=("aggregate run cap reached (partial audit)")
           [[ "${PURGE_FAILURES}" != "0" ]] && NOTIFY_PARTS+=("${PURGE_FAILURES} run(s) with unclosed exposure window (purge failed)")
           [[ "${PROCESSING_FAILURES}" != "0" ]] && NOTIFY_PARTS+=("${PROCESSING_FAILURES} run(s) detected but not fully recorded")
+          # Upload is skipped when there are no leaks -- only treat a missed
+          # combined redacted artifact as failure when one was expected.
+          [[ "${FLAGGED_COUNT}" != "0" && "${UPLOAD_OUTCOME}" != "success" ]] && NOTIFY_PARTS+=("redacted-log artifact upload ${UPLOAD_OUTCOME}")
           # "${arr[*]}" with IFS set only honors the *first* IFS character
           # when joining, so a ", " separator needs an explicit printf join
           # instead.
@@ -643,7 +646,8 @@ jobs:
 
           # Leaks after a complete scan+purge are a finding, not an audit
           # outage -- Slack success with the leak count in Detail. Incomplete
-          # coverage or an unclosed exposure window stay failure.
+          # coverage, a missed redacted artifact (when leaks were found), or
+          # an unclosed exposure window stay failure.
           if [[ "${DISCOVER_OUTCOME}" != "success" \
              || "${AGGREGATE_OUTCOME}" != "success" \
              || ( "${SCAN_OUTCOME}" != "success" && "${SCAN_OUTCOME}" != "skipped" ) \
@@ -651,7 +655,8 @@ jobs:
              || "${SKIPPED_TOTAL}" != "0" \
              || "${RUNS_TRUNCATED}" == "true" \
              || "${PURGE_FAILURES}" != "0" \
-             || "${PROCESSING_FAILURES}" != "0" ]]; then
+             || "${PROCESSING_FAILURES}" != "0" \
+             || ( "${FLAGGED_COUNT}" != "0" && "${UPLOAD_OUTCOME}" != "success" ) ]]; then
             echo "notify-status=failure" >> "$GITHUB_OUTPUT"
           else
             echo "notify-status=success" >> "$GITHUB_OUTPUT"
