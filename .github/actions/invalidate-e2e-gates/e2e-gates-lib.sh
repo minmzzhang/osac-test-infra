@@ -75,18 +75,36 @@ load_check_runs_for_sha() {
   rm -rf "${tmpdir}"
 }
 
-# Print latest native gate job conclusion (success, failure, missing, ...).
-latest_gate_conclusion() {
+# Print latest native gate job conclusion.
+# Terminal: success, skipped, failure, cancelled.
+# Otherwise: pending (job exists, not completed) or missing (no native job).
+native_gate_job_conclusion() {
   local gate="$1"
   jq -r --arg g "${gate}" '
-    [.[] | select(
+    ([.[] | select(
       .name == $g
       and ((.details_url // "") | test("/actions/runs/[0-9]+/job/"))
-    )]
-    | sort_by(.started_at)
-    | last
-    | .conclusion // "missing"
+    )] | sort_by(.started_at) | last) as $last
+    | if $last == null then "missing"
+      elif $last.status != "completed" then "pending"
+      else ($last.conclusion // "missing")
+      end
   ' <<<"${CHECK_RUNS_JSON}"
+}
+
+# Print latest native gate job conclusion (success, failure, missing, ...).
+latest_gate_conclusion() {
+  native_gate_job_conclusion "$1"
+}
+
+# True when native conclusion can be copied onto an unlock orphan check.
+# in_progress orphans keep required checks pending (merge-queue Cancel
+# pending); mirroring a terminal native result unblocks that wait.
+native_gate_conclusion_is_mirrorable() {
+  case "$1" in
+    success|skipped|failure|cancelled) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Exit 0 when every merge-required native gate job is success on HEAD_SHA.
@@ -106,16 +124,7 @@ all_merge_e2e_gates_green() {
 
 # True when a native full-install gate job already reported success on HEAD_SHA.
 native_gate_job_success() {
-  local gate="$1"
-  jq -e --arg g "${gate}" '
-    [.[] | select(
-      .name == $g
-      and ((.details_url // "") | test("/actions/runs/[0-9]+/job/"))
-    )]
-    | sort_by(.started_at)
-    | last
-    | .status == "completed" and .conclusion == "success"
-  ' <<<"${CHECK_RUNS_JSON}" >/dev/null
+  [[ "$(native_gate_job_conclusion "$1")" == "success" ]]
 }
 
 # Validate COMPLETE_GATE_NAME when set; return 2 on unsupported value.
@@ -150,36 +159,39 @@ orphan_in_progress_gate_check_ids() {
   ' <<<"${CHECK_RUNS_JSON}"
 }
 
-# Complete orphaned in_progress API gate checks after native gate jobs succeed.
+# Complete orphaned in_progress API gate checks after native gate jobs finish.
+# Mirrors the native job conclusion (success, skipped, failure, cancelled).
 # Set COMPLETE_GATE_NAME to limit completion to one gate.
 complete_stale_in_progress_merge_gates() {
-  local gate id completed_at title summary
+  local gate id completed_at title summary conclusion
 
   validate_complete_gate_name || return 2
 
   load_check_runs_for_sha
   completed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
   title="Superseded by native e2e gate job"
-  summary="Stale invalidate-e2e-gates check; merge-required gate already success on this SHA."
 
   for gate in "${MERGE_E2E_GATE_NAMES[@]}"; do
     if [[ -n "${COMPLETE_GATE_NAME:-}" && "${gate}" != "${COMPLETE_GATE_NAME}" ]]; then
       continue
     fi
-    if ! native_gate_job_success "${gate}"; then
-      echo "Skipping ${gate}: no native gate job success on ${HEAD_SHA:0:7}"
+    conclusion=$(native_gate_job_conclusion "${gate}")
+    if ! native_gate_conclusion_is_mirrorable "${conclusion}"; then
+      echo "Skipping ${gate}: native gate is '${conclusion}' on ${HEAD_SHA:0:7}"
       continue
     fi
     while IFS= read -r id; do
       [[ -z "${id}" || "${id}" == "null" ]] && continue
       load_check_runs_for_sha
-      if ! native_gate_job_success "${gate}"; then
-        echo "Skipping stale ${gate} check ${id}: native gate no longer success on ${HEAD_SHA:0:7}"
+      conclusion=$(native_gate_job_conclusion "${gate}")
+      if ! native_gate_conclusion_is_mirrorable "${conclusion}"; then
+        echo "Skipping stale ${gate} check ${id}: native gate now '${conclusion}'"
         continue
       fi
+      summary="Stale invalidate-e2e-gates check; merge-required native gate is ${conclusion} on this SHA."
       payload=$(jq -n \
         --arg status "completed" \
-        --arg conclusion "success" \
+        --arg conclusion "${conclusion}" \
         --arg completed_at "${completed_at}" \
         --arg title "${title}" \
         --arg summary "${summary}" \
@@ -190,7 +202,7 @@ complete_stale_in_progress_merge_gates() {
           output: {title: $title, summary: $summary}
         }')
       if gh api "repos/${REPO}/check-runs/${id}" -X PATCH --input - <<<"${payload}"; then
-        echo "Completed stale in_progress ${gate} check ${id} on ${HEAD_SHA:0:7}"
+        echo "Completed stale in_progress ${gate} check ${id} on ${HEAD_SHA:0:7} -> ${conclusion}"
       else
         echo "Could not complete stale ${gate} check ${id} (checks:write unavailable; non-fatal)." >&2
       fi

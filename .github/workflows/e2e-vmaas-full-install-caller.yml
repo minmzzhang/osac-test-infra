@@ -136,8 +136,6 @@ jobs:
       && github.event_name == 'pull_request'
       && needs.e2e-readiness.result == 'success'
       && needs.e2e-readiness.outputs.ready == 'true'
-      && !contains(needs.e2e-vmaas-gate.result, 'failure')
-      && !contains(needs.e2e-vmaas-gate.result, 'cancelled')
     needs: [e2e-readiness, e2e-vmaas-full-install, e2e-vmaas-gate]
     runs-on: ubuntu-latest
     permissions:

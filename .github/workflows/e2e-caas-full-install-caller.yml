@@ -117,8 +117,6 @@ jobs:
       && github.event_name == 'pull_request'
       && needs.e2e-readiness.result == 'success'
       && needs.e2e-readiness.outputs.ready == 'true'
-      && !contains(needs.e2e-caas-gate.result, 'failure')
-      && !contains(needs.e2e-caas-gate.result, 'cancelled')
     needs: [e2e-readiness, e2e-caas-full-install, e2e-caas-gate]
     runs-on: ubuntu-latest
     permissions:
