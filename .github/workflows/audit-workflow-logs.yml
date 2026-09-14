@@ -641,6 +641,22 @@ jobs:
           NOTIFY_MESSAGE="${NOTIFY_MESSAGE#, }"
           echo "notify-message=${NOTIFY_MESSAGE}" >> "$GITHUB_OUTPUT"
 
+          # Leaks after a complete scan+purge are a finding, not an audit
+          # outage -- Slack success with the leak count in Detail. Incomplete
+          # coverage or an unclosed exposure window stay failure.
+          if [[ "${DISCOVER_OUTCOME}" != "success" \
+             || "${AGGREGATE_OUTCOME}" != "success" \
+             || ( "${SCAN_OUTCOME}" != "success" && "${SCAN_OUTCOME}" != "skipped" ) \
+             || "${NO_TARGETS}" == "true" \
+             || "${SKIPPED_TOTAL}" != "0" \
+             || "${RUNS_TRUNCATED}" == "true" \
+             || "${PURGE_FAILURES}" != "0" \
+             || "${PROCESSING_FAILURES}" != "0" ]]; then
+            echo "notify-status=failure" >> "$GITHUB_OUTPUT"
+          else
+            echo "notify-status=success" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Report findings
         # always(): a bare condition implicitly ANDs with success() of every
         # prior step in the job, so if "Upload combined redacted logs" fails
@@ -744,7 +760,11 @@ jobs:
           (needs.discover.result != 'success' || steps.aggregate.outcome != 'success' || (needs.scan.result != 'success' && needs.scan.result != 'skipped') || steps.summary.outcome != 'success' || steps.aggregate.outputs.flagged-count != '0' || steps.summary.outputs.skipped-total != '0' || needs.discover.outputs.no-targets == 'true' || needs.discover.outputs.runs-truncated == 'true')
         uses: ./.github/actions/notify-slack
         with:
-          status: failure
+          # success when the audit completed and only finding is leaks
+          # (see notify-status above); failure for incomplete coverage
+          # or an unclosed exposure window. Empty fallback is failure
+          # so a crashed summary step cannot look like a clean pass.
+          status: ${{ steps.summary.outputs.notify-status || 'failure' }}
           workflow-name: "Workflow log/artifact audit"
           failed-step: "${{ steps.summary.outputs.notify-message || 'Audit incomplete -- see run logs' }}"
           slack-webhook-url: ${{ steps.vault.outputs.SLACK_WEBHOOK_URL }}
