@@ -193,11 +193,20 @@ def test_resolve_path_rejects_traversal() -> None:
         )
 
 
-_FAKE_JWT = (
-    "eyJhbGciOiJub25lIn0."
-    "eyJzdWIiOiJ0ZXN0LXVzZXIiLCJuYW1lIjoiZXhhbXBsZSJ9."
-    "fakesig"
-)
+def _b64url_nopad(data: bytes) -> str:
+    """URL-safe Base64 without padding (JWT compact-form segment)."""
+    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
+
+
+def _make_fake_jwt() -> str:
+    """Build a compact JWT at runtime so source has no token-shaped literal."""
+    header = _b64url_nopad(b'{"alg":"none"}')
+    payload = _b64url_nopad(b'{"sub":"test-user","name":"example"}')
+    signature = "testsignaturevalue"
+    return f"{header}.{payload}.{signature}"
+
+
+_FAKE_JWT = _make_fake_jwt()
 
 
 def _decoded_finding(
@@ -382,6 +391,30 @@ def test_caas_jobs_page_decoded_payload_leaves_no_compact_jwt() -> None:
         _assert(b"[REDACTED]" in published, "marker missing")
 
 
+def test_b64_wrapped_hex_secret() -> None:
+    """base64(hex(secret)) must peel; exclusive b64-then-hex fallbacks miss it."""
+    secret = b"ABCDEFGHIJKLMNOPQRSTUVWX"
+    hexed = binascii.hexlify(secret)
+    wrapped = base64.b64encode(hexed)
+    _assert(
+        redact.blob_decodes_to_secret(wrapped, [secret]),
+        "peel missed b64(hex(secret))",
+    )
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        target = root / "app.log"
+        target.write_bytes(b"blob=" + wrapped + b"\n")
+        redact.redact_tree(
+            [_decoded_finding(secret.decode("ascii"), "/scan/app.log", depth=2)],
+            root,
+        )
+        published = target.read_bytes()
+        _assert(wrapped not in published, f"wrapper still present: {published!r}")
+        _assert(hexed not in published, "hex layer still present")
+        _assert(secret not in published, "secret still present")
+        _assert(b"[REDACTED]" in published, "marker missing")
+
+
 def test_hex_wrapper_of_json_containing_secret() -> None:
     """decoded:hex of a JSON wrapper, not hex(secret) itself."""
     inner = json.dumps({"access_token": _FAKE_JWT}, separators=(",", ":")).encode()
@@ -413,6 +446,7 @@ def main() -> None:
     test_percent_encoded_secret()
     test_unrelated_b64_not_wiped()
     test_caas_jobs_page_decoded_payload_leaves_no_compact_jwt()
+    test_b64_wrapped_hex_secret()
     test_hex_wrapper_of_json_containing_secret()
     print("redact_test.py: ok")
 

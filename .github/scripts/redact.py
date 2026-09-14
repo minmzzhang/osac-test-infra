@@ -171,21 +171,26 @@ def decode_tag_meta(finding: dict) -> tuple[str | None, int]:
 def blob_decodes_to_secret(blob: bytes, secrets: list[bytes]) -> bool:
     """True if any decode layer (up to _MAX_DECODE_DEPTH) contains a secret.
 
-    Prefer base64 (gitleaks default on this alphabet), then hex, then percent,
-    so a b64 wrapper around hex/JSON still peels.
+    Try every decoder independently at each layer. Exclusive b64-then-hex
+    fallbacks miss cross-encodings such as base64(hex(secret)): b64 peels to
+    hex text, then urlsafe_b64decode accepts that alphabet and hex never runs.
     """
-    current = blob
+    frontier = [blob]
+    seen = {blob}
     for _ in range(_MAX_DECODE_DEPTH):
-        decoded = try_b64_decode(current)
-        if decoded is None or decoded == current:
-            decoded = try_hex_decode(current)
-        if decoded is None or decoded == current:
-            decoded = try_percent_decode(current)
-        if decoded is None or decoded == current:
+        next_frontier: list[bytes] = []
+        for current in frontier:
+            for decoder in (try_b64_decode, try_hex_decode, try_percent_decode):
+                decoded = decoder(current)
+                if decoded is None or decoded == current or decoded in seen:
+                    continue
+                if any(secret in decoded for secret in secrets):
+                    return True
+                seen.add(decoded)
+                next_frontier.append(decoded)
+        if not next_frontier:
             return False
-        if any(secret in decoded for secret in secrets):
-            return True
-        current = decoded
+        frontier = next_frontier
     return False
 
 
