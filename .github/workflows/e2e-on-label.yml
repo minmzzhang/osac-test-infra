@@ -10,10 +10,10 @@
 # workflow_dispatch: GITHUB_TOKEN label events do not start other workflows, so
 # slash-command-handler dispatches the per-repo e2e-on-label.yml after applying
 # e2e-ready. That run is on main; e2e-start must not POST e2e-*-gate checks
-# (unbound in_progress posts land on auto-queue / ok-to-test and become the
-# required check). Native full-install jobs report; until then gates stay
-# pending. Default workflow names are this repo's *-caller.yml files; osac
-# passes its caller filenames.
+# (unbound in_progress posts land on auto-queue / cancel-stale / ok-to-test
+# and become the required check). Native full-install jobs report; until then
+# gates stay pending. Default workflow names are this repo's *-caller.yml
+# files; osac passes its caller filenames.
 name: E2E on unlock label
 
 on:

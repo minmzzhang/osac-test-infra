@@ -5,7 +5,8 @@
 # Probe skip-vs-rerun before replaying full-install runs. A second unlock
 # (lgtm while CodeRabbit full-install is already running) must not POST
 # in_progress e2e-*-gate checks — those orphans block merge (osac#957) and
-# GitHub groups unbound posts under unrelated suites (auto-queue, ok-to-test).
+# GitHub groups unbound posts under unrelated suites (auto-queue,
+# cancel-stale, ok-to-test).
 #
 # Cost-gate unlock labels are lgtm and e2e-ready only. ok-to-test is secrets
 # for fork PRs and must not start e2e or POST e2e-*-gate checks.
