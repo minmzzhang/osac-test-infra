@@ -15,7 +15,7 @@ info() { echo "==> $*"; }
 # ---------- containerlab state ----------
 
 info "Gathering containerlab state..."
-sudo containerlab inspect -n agentless-net-lab 2>&1 | tee "$LOG_DIR/containerlab-inspect.txt" >/dev/null || true
+containerlab inspect -n agentless-net-lab 2>&1 | tee "$LOG_DIR/containerlab-inspect.txt" >/dev/null || true
 
 # ---------- switch state ----------
 
@@ -40,13 +40,13 @@ done
 
 # ---------- management cluster ----------
 
-if [ -f "${INFRA_DIR}/.mgmt-network" ]; then
+if [ -f "${INFRA_DIR}/.agentless-net.env" ]; then
     # shellcheck source=/dev/null
-    source "${INFRA_DIR}/.mgmt-network"
+    source "${INFRA_DIR}/.agentless-net.env"
     export KUBECONFIG
-    oc get pods -n "${OSAC_NAMESPACE:-osac-e2e-ci}" > "$LOG_DIR/osac-pods.txt" 2>&1 || true
+    oc get pods -n "${OSAC_NAMESPACE:-osac}" > "$LOG_DIR/osac-pods.txt" 2>&1 || true
     oc get agents -n hardware-inventory -o wide > "$LOG_DIR/agents.txt" 2>&1 || true
-    oc get clusterorders -n "${OSAC_NAMESPACE:-osac-e2e-ci}" > "$LOG_DIR/clusterorders.txt" 2>&1 || true
+    oc get clusterorders -n "${OSAC_NAMESPACE:-osac}" > "$LOG_DIR/clusterorders.txt" 2>&1 || true
     oc get hostedclusters -A > "$LOG_DIR/hostedclusters.txt" 2>&1 || true
 fi
 

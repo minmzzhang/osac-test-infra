@@ -10,11 +10,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INFRA_DIR="${SCRIPT_DIR}/.."
 
 # shellcheck source=/dev/null
-source "${INFRA_DIR}/.mgmt-network"
+source "${INFRA_DIR}/.agentless-net.env"
 
 export KUBECONFIG
 
-OSAC_NAMESPACE="${OSAC_NAMESPACE:-osac-e2e-ci}"
+OSAC_NAMESPACE="${OSAC_NAMESPACE:-osac}"
 PULL_SECRET="${OSAC_PULL_SECRET_PATH:-/root/pull-secret}"
 
 CLUSTER_TEMPLATE="osac.templates.ocp_ci_small"

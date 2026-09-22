@@ -1,4 +1,5 @@
 .mgmt-network
+.agentless-net.env
 .env.infra
 clab-agentless-net-lab/
 logs/

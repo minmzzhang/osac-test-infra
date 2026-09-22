@@ -12,16 +12,16 @@ mkdir -p "$LOG_DIR"
 
 info() { echo "==> $*"; }
 
-if [ ! -f "${INFRA_DIR}/.mgmt-network" ]; then
-    info "No .mgmt-network — skipping"
+if [ ! -f "${INFRA_DIR}/.agentless-net.env" ]; then
+    info "No .agentless-net.env — skipping"
     exit 0
 fi
 
 # shellcheck source=/dev/null
-source "${INFRA_DIR}/.mgmt-network"
+source "${INFRA_DIR}/.agentless-net.env"
 export KUBECONFIG
 
-OSAC_NAMESPACE="${OSAC_NAMESPACE:-osac-e2e-ci}"
+OSAC_NAMESPACE="${OSAC_NAMESPACE:-osac}"
 
 # ---------- cluster state ----------
 

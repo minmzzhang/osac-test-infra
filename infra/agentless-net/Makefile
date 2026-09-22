@@ -5,41 +5,35 @@ EXTRA_VARS ?=
 ENV_INFRA := .env.infra
 SCRIPTS := scripts
 
-MGMT_CLONE_NAME ?= agentless-lab-mgmt
-OSAC_NAMESPACE ?= osac-e2e-ci
-OSAC_VALUES_FILE ?= values/caas-ci/values.yaml
+KUBECONFIG ?= /root/labs/osac/deploy/auth/kubeconfig
+OSAC_NAMESPACE ?= osac
 OSAC_PULL_SECRET_PATH ?= /root/pull-secret
 
-export MGMT_CLONE_NAME OSAC_NAMESPACE OSAC_VALUES_FILE OSAC_PULL_SECRET_PATH
+export KUBECONFIG OSAC_NAMESPACE OSAC_PULL_SECRET_PATH
 
 # ─── Contract targets ──────────────────────────────────────────────
 #
 # Called individually from the workflow or command line.
-# Order: setup-infra → deploy-ocp → deploy-osac → deploy-fabric → setup-caas → test-e2e
+# The hub is created by ocp-labs. This repository configures the virtual fabric.
 
 setup-infra:
 	@echo "=== Installing prerequisites ==="
 	$(SCRIPTS)/setup-infra.sh
 
 deploy-ocp:
-	@echo "=== Booting SNO from snapshot via cluster-tool, fixing DNS ==="
+	@echo "=== The OCP hub must be created by ocp-labs ==="
 	$(SCRIPTS)/deploy-ocp.sh
 
 deploy-osac:
-	@echo "=== Installing OSAC via Helm ==="
+	@echo "=== Install OSAC with the cookbook Helm steps ==="
 	$(SCRIPTS)/deploy-osac.sh
-	@printf '%s\n' \
-		'KUBECONFIG=$(HOME)/.kube/$(MGMT_CLONE_NAME).kubeconfig' \
-		'OSAC_NAMESPACE=$(OSAC_NAMESPACE)' \
-		'OSAC_PULL_SECRET_PATH=$(OSAC_PULL_SECRET_PATH)' \
-		> $(ENV_INFRA)
 
 deploy-fabric:
 	@echo "=== Deploying containerlab topology, configuring switches, BGP ==="
 	$(SCRIPTS)/deploy-fabric.sh
 
 setup-caas:
-	@echo "=== Registering host type, creating InfraEnv, booting VMs, approving agents ==="
+	@echo "=== Managed hosts use the DiskImage/AAP path for this workflow ==="
 	$(SCRIPTS)/setup-caas.sh
 
 test-e2e:

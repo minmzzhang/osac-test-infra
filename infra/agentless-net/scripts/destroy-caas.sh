@@ -44,9 +44,9 @@ fi
 
 # ---------- clean up agent resources ----------
 
-if [ -f "${INFRA_DIR}/.mgmt-network" ]; then
+if [ -f "${INFRA_DIR}/.agentless-net.env" ]; then
     # shellcheck source=/dev/null
-    source "${INFRA_DIR}/.mgmt-network"
+    source "${INFRA_DIR}/.agentless-net.env"
     export KUBECONFIG
     oc delete infraenv --all -n "$AGENT_NAMESPACE" --ignore-not-found 2>/dev/null || true
     oc delete agents --all -n "$AGENT_NAMESPACE" --ignore-not-found 2>/dev/null || true
