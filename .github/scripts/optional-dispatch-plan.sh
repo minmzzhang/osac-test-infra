@@ -43,6 +43,12 @@ if ! jq -e '
   echo "optional-dispatch-plan: custom inputs must be an object of string values" >&2
   exit 1
 fi
+if ! jq -e '
+  all(keys[]; test("\\A[A-Za-z][A-Za-z0-9_-]*\\z"))
+' <<<"${CUSTOM_INPUTS}" >/dev/null 2>&1; then
+  echo "optional-dispatch-plan: invalid custom input name" >&2
+  exit 1
+fi
 MARKER="PR #${PR_NUMBER} @ ${HEAD_SHA}"
 
 DISPATCH_ARGS=()
@@ -70,11 +76,14 @@ if [[ "${TRIGGER}" == "workflow_dispatch" ]]; then
         exit 1
         ;;
     esac
-    input_value=$(jq -r --arg name "${input_name}" '.[$name]' <<<"${CUSTOM_INPUTS}")
-    if [[ "${input_value}" == *$'\n'* || "${input_value}" == *$'\r'* ]]; then
-      echo "optional-dispatch-plan: custom input values may not contain line breaks" >&2
+    if ! jq -e --arg name "${input_name}" '
+      (.[$name] | type == "string") and
+      (.[$name] | (contains("\n") or contains("\r")) | not)
+    ' <<<"${CUSTOM_INPUTS}" >/dev/null 2>&1; then
+      echo "optional-dispatch-plan: custom input values may not contain line breaks: ${input_name}" >&2
       exit 1
     fi
+    input_value=$(jq -r --arg name "${input_name}" '.[$name]' <<<"${CUSTOM_INPUTS}")
     DISPATCH_ARGS+=(-f "${input_name}=${input_value}")
   done < <(jq -r 'keys[]' <<<"${CUSTOM_INPUTS}")
 elif [[ "${TRIGGER}" != "label" || -z "${LABEL}" ]]; then

@@ -88,9 +88,14 @@ for ((index = 0; index < WORKFLOW_COUNT; index++)); do
   inputs=$(jq -c --argjson index "${index}" '.workflows[$index] | if has("inputs") then .inputs else {} end' "${REGISTRY_JSON}")
   if ! jq -en --argjson inputs "${inputs}" '
     ($inputs | type) == "object" and
-    ($inputs | all(.[]; type == "string"))
+    ($inputs | all(.[]; type == "string" and ((contains("\n") or contains("\r")) | not)))
   ' >/dev/null 2>&1; then
-    die "workflows[${index}].inputs must be an object of string values"
+    die "workflows[${index}].inputs must be an object of string values without line breaks"
+  fi
+  if ! jq -en --argjson inputs "${inputs}" '
+    $inputs | all(keys[]; test("\\A[A-Za-z][A-Za-z0-9_-]*\\z"))
+  ' >/dev/null 2>&1; then
+    die "workflows[${index}].inputs has an invalid input name"
   fi
   while IFS= read -r input_name; do
     [[ "${input_name}" =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]] ||
