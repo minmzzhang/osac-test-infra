@@ -394,7 +394,13 @@ jobs:
 
           if gh pr view "${PR_NUMBER}" -R "${REPO}" --json labels \
             --jq '.labels[].name' 2>/dev/null | grep -Fxq "${CLEAR_LABEL}"; then
-            gh pr edit "${PR_NUMBER}" -R "${REPO}" --remove-label "${CLEAR_LABEL}" || true
+            if ! gh pr edit "${PR_NUMBER}" -R "${REPO}" --remove-label "${CLEAR_LABEL}"; then
+              gh pr comment "${PR_NUMBER}" -R "${REPO}" \
+                --body "Failed to remove \`${CLEAR_LABEL}\` before applying \`${TIER_LABEL}\` for \`${HEAD_SHA:0:7}\`."
+              gh api "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" \
+                -f content='confused' --silent 2>/dev/null || true
+              exit 1
+            fi
           fi
 
           if ! gh pr view "${PR_NUMBER}" -R "${REPO}" --json labels \

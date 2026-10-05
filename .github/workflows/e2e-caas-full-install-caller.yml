@@ -77,7 +77,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
-      issues: read
     outputs:
       test-suite: ${{ steps.pick.outputs.test-suite }}
     steps:

@@ -39,8 +39,11 @@ elif [[ -n "${PR_NUMBER}" && -n "${GITHUB_REPOSITORY}" ]]; then
     echo "resolve-e2e-suite: gh is required to load PR labels" >&2
     exit 1
   }
-  labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
-    --jq '.[].name' 2>/dev/null || true)
+  if ! labels=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/labels" \
+    --jq '.[].name'); then
+    echo "resolve-e2e-suite: failed to load labels for PR #${PR_NUMBER}" >&2
+    exit 1
+  fi
 fi
 
 if printf '%s\n' "${labels}" | grep -Fxq e2e-serial; then
