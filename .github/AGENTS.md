@@ -13,6 +13,8 @@
 - `.github/workflows/e2e-on-approval.yml` — CodeRabbit APPROVED: same-repo calls the starter; fork only `fork-handoff`.
 - `.github/workflows/e2e-on-approval-fork.yml` — `workflow_run` replay after `fork-handoff`; verifies CR APPROVED on exact HEAD, then calls the starter. osac calls this via `workflow_call`.
 - `.github/workflows/e2e-ready-label-cleanup.yml` — Removes `e2e-ready` on new pushes
+- Suite selection — unlabeled defaults unchanged (`vmaas` / `caas` full suite; `bmaas/sanity` on PR, `bmaas/serial` on schedule). `/e2e-regression` or `e2e-regression` label → `*/regression`; `/e2e-serial` or `e2e-serial` label → `*/serial` (same job; `e2e-serial` wins if both are set). Tier labels do **not** start e2e.
+- Slash — `/e2e-regression` / `/e2e-serial` apply the tier label only. `/test vmaas` / `caas` / `bmaas` (from `.github/optional-workflows.yml`) dispatch the platform caller, which reads PR labels for the suite. Netris remains label-trigger only.
 
 ## Testing
 

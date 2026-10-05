@@ -14,8 +14,13 @@ on:
     - cron: "0 */3 * * *"
   workflow_dispatch:
     inputs:
+      pr-number:
+        description: "PR number (set by slash /test; used to read e2e-regression/e2e-serial labels)"
+        required: false
+        type: string
+        default: ""
       test-suite:
-        description: "Suite relative to tests/e2e (bmaas/sanity, bmaas/regression, bmaas/serial, or bmaas for all). Default: bmaas/sanity"
+        description: "Suite relative to tests/e2e (bmaas/sanity, bmaas/regression, bmaas/serial, or bmaas for all). Default: bmaas/sanity. PR e2e-regression/e2e-serial labels override."
         required: false
         default: "bmaas/sanity"
       test-filter:
@@ -76,10 +81,46 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
 
+  resolve-suite:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      test-suite: ${{ steps.pick.outputs.test-suite }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/resolve-e2e-suite.sh
+      - name: Resolve test-suite from input or PR labels
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number || '' }}
+          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          EXPLICIT_SUITE: ${{ inputs.test-suite || '' }}
+        run: |
+          set -euo pipefail
+          # Unlabeled defaults match main: PR/merge_group/dispatch → sanity;
+          # schedule → serial.
+          default_suite=bmaas/sanity
+          if [[ "${EVENT_NAME}" == "schedule" ]]; then
+            default_suite=bmaas/serial
+          fi
+          suite=$(bash .github/scripts/resolve-e2e-suite.sh bmaas "${default_suite}" "${EXPLICIT_SUITE}")
+          echo "test-suite=${suite}" >>"${GITHUB_OUTPUT}"
+          echo "Resolved test-suite=${suite}"
+
   e2e-bmaas-full-install:
-    needs: [e2e-readiness]
+    needs: [e2e-readiness, resolve-suite]
     if: >-
       always()
+      && needs.resolve-suite.result == 'success'
       && (github.event_name != 'pull_request'
           || needs.e2e-readiness.result == 'skipped'
           || needs.e2e-readiness.outputs.ready == 'true')
@@ -90,15 +131,7 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-bmaas-full-install.yml
     with:
-      # Overlayed osac tests use directory tiers, not pytest markers.
-      # PR/merge_group: bmaas/sanity. Schedule: bmaas/serial. Dispatch: honor input.
-      test-suite: >-
-        ${{
-          inputs.test-suite != '' && inputs.test-suite ||
-          (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'bmaas/sanity' ||
-          github.event_name == 'schedule' && 'bmaas/serial' ||
-          'bmaas/sanity'
-        }}
+      test-suite: ${{ needs.resolve-suite.outputs.test-suite }}
       # Networking is Netris-lab only. Overlay of tests/e2e/bmaas would collect
       # it from regression/; deselect so GHA matches lifecycle+inventory.
       test-filter: ${{ inputs.test-filter && format('({0}) and not TestBmaasNetworking', inputs.test-filter) || 'not TestBmaasNetworking' }}
@@ -110,7 +143,7 @@ jobs:
       runner-label: ${{ inputs.runner-label || 'osac-ci' }}
       fork-pr-author-association: ${{ github.event.pull_request.head.repo.fork && github.event.pull_request.author_association || '' }}
       fork-pr-author: ${{ github.event.pull_request.head.repo.fork && github.event.pull_request.user.login || '' }}
-      pr-number: ${{ github.event.pull_request.number }}
+      pr-number: ${{ github.event.pull_request.number || inputs.pr-number }}
       notify-on-failure: ${{ github.event_name == 'schedule' }}
       enable-ai-diagnostic: ${{ github.ref == 'refs/heads/main' }}
 
@@ -120,12 +153,13 @@ jobs:
       && (github.event_name != 'pull_request'
           || needs.e2e-readiness.result != 'success'
           || needs.e2e-readiness.outputs.ready == 'true')
-    needs: [e2e-readiness, e2e-bmaas-full-install]
+    needs: [e2e-readiness, resolve-suite, e2e-bmaas-full-install]
     runs-on: ubuntu-latest
     steps:
       - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
         run: |
           echo "e2e-readiness: ${{ needs.e2e-readiness.result }}"
+          echo "resolve-suite: ${{ needs.resolve-suite.result }}"
           echo "e2e-bmaas-full-install: ${{ needs.e2e-bmaas-full-install.result }}"
           exit 1
       - if: ${{ !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
