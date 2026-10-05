@@ -81,7 +81,11 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
 
+  # Only needed for workflow_dispatch (PR labels come from the event payload).
+  # Running this on every PR queued an extra ubuntu-latest job that often sat
+  # until concurrency cancelled it; the gate then treated cancelled as failure.
   resolve-suite:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -99,19 +103,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number || '' }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_NUMBER: ${{ inputs.pr-number || '' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           EXPLICIT_SUITE: ${{ inputs.test-suite || '' }}
         run: |
           set -euo pipefail
-          # Unlabeled defaults match main: PR/merge_group/dispatch → sanity;
-          # schedule → serial.
-          default_suite=bmaas/sanity
-          if [[ "${EVENT_NAME}" == "schedule" ]]; then
-            default_suite=bmaas/serial
-          fi
-          suite=$(bash .github/scripts/resolve-e2e-suite.sh bmaas "${default_suite}" "${EXPLICIT_SUITE}")
+          # Unlabeled dispatch default: sanity (schedule uses expression path).
+          suite=$(bash .github/scripts/resolve-e2e-suite.sh bmaas bmaas/sanity "${EXPLICIT_SUITE}")
           echo "test-suite=${suite}" >>"${GITHUB_OUTPUT}"
           echo "Resolved test-suite=${suite}"
 
@@ -119,7 +117,9 @@ jobs:
     needs: [e2e-readiness, resolve-suite]
     if: >-
       always()
-      && needs.resolve-suite.result == 'success'
+      && (needs.resolve-suite.result == 'success'
+          || (needs.resolve-suite.result == 'skipped'
+              && github.event_name != 'workflow_dispatch'))
       && (github.event_name != 'pull_request'
           || needs.e2e-readiness.result == 'skipped'
           || needs.e2e-readiness.outputs.ready == 'true')
@@ -130,7 +130,15 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-bmaas-full-install.yml
     with:
-      test-suite: ${{ needs.resolve-suite.outputs.test-suite }}
+      test-suite: >-
+        ${{
+          needs.resolve-suite.outputs.test-suite ||
+          github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e-serial') && 'bmaas/serial' ||
+          github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e-regression') && 'bmaas/regression' ||
+          (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'bmaas/sanity' ||
+          github.event_name == 'schedule' && 'bmaas/serial' ||
+          'bmaas/sanity'
+        }}
       # Networking is Netris-lab only. Overlay of tests/e2e/bmaas would collect
       # it from regression/; deselect so GHA matches lifecycle+inventory.
       test-filter: ${{ inputs.test-filter && format('({0}) and not TestBmaasNetworking', inputs.test-filter) || 'not TestBmaasNetworking' }}

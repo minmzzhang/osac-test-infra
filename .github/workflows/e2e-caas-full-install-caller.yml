@@ -72,7 +72,11 @@ jobs:
           pr-number: ${{ github.event.pull_request.number }}
           head-sha: ${{ github.event.pull_request.head.sha }}
 
+  # Only needed for workflow_dispatch (PR labels come from the event payload).
+  # Running this on every PR queued an extra ubuntu-latest job that often sat
+  # until concurrency cancelled it; the gate then treated cancelled as failure.
   resolve-suite:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -90,8 +94,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr-number || '' }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          PR_NUMBER: ${{ inputs.pr-number || '' }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           EXPLICIT_SUITE: ${{ inputs.test-suite || '' }}
         run: |
@@ -105,7 +108,9 @@ jobs:
     needs: [e2e-readiness, resolve-suite]
     if: >-
       always()
-      && needs.resolve-suite.result == 'success'
+      && (needs.resolve-suite.result == 'success'
+          || (needs.resolve-suite.result == 'skipped'
+              && github.event_name != 'workflow_dispatch'))
       && (github.event_name != 'pull_request'
           || needs.e2e-readiness.result == 'skipped'
           || needs.e2e-readiness.outputs.ready == 'true')
@@ -116,7 +121,15 @@ jobs:
       id-token: write
     uses: ./.github/workflows/e2e-caas-full-install.yml
     with:
-      test-suite: ${{ needs.resolve-suite.outputs.test-suite }}
+      test-suite: >-
+        ${{
+          needs.resolve-suite.outputs.test-suite ||
+          github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e-serial') && 'caas/serial' ||
+          github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'e2e-regression') && 'caas/regression' ||
+          (github.event_name == 'pull_request' || github.event_name == 'merge_group') && 'caas' ||
+          github.event_name == 'schedule' && 'caas' ||
+          'caas'
+        }}
       test-filter: ${{ inputs.test-filter || '' }}
       installer-ref: ${{ inputs.installer-ref || 'main' }}
       installer-repo: ${{ inputs.installer-repo || 'osac-project/osac' }}
