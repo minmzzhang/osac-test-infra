@@ -111,7 +111,7 @@ jobs:
           # Unlabeled default stays the full suite (same as main).
           suite=$(bash .github/scripts/resolve-e2e-suite.sh vmaas vmaas "${EXPLICIT_SUITE}")
           echo "test-suite=${suite}" >>"${GITHUB_OUTPUT}"
-          echo "Resolved test-suite=${suite}"
+          echo "Resolved test-suite"
 
   e2e-vmaas-full-install:
     needs: [e2e-readiness, resolve-suite]

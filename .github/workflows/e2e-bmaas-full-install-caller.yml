@@ -111,7 +111,7 @@ jobs:
           # Unlabeled dispatch default: sanity (schedule uses expression path).
           suite=$(bash .github/scripts/resolve-e2e-suite.sh bmaas bmaas/sanity "${EXPLICIT_SUITE}")
           echo "test-suite=${suite}" >>"${GITHUB_OUTPUT}"
-          echo "Resolved test-suite=${suite}"
+          echo "Resolved test-suite"
 
   e2e-bmaas-full-install:
     needs: [e2e-readiness, resolve-suite]
