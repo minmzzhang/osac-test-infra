@@ -27,7 +27,7 @@ fi
 # canonical gate check for this SHA.
 native_runs=$(gh api \
   "repos/${REPO}/actions/workflows/${WORKFLOW_FILE}/runs?event=pull_request&head_sha=${HEAD_SHA}&per_page=100" \
-  --jq '.workflow_runs | length')
+  --jq '[.workflow_runs[] | select(.conclusion != "cancelled")] | length')
 if [[ "${native_runs}" != "0" ]]; then
   echo "A native pull_request run now exists for ${HEAD_SHA}; its gate owns this SHA."
   exit 0

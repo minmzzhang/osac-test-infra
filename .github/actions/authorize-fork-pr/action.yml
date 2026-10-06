@@ -95,7 +95,7 @@ runs:
           fi
         fi
 
-        echo "::error::Fork PR blocked: neither the author nor fork owner is an osac-project org member."
+        echo "::error::Fork PR blocked: authorization could not be established."
         echo "::error::An org member can approve this PR for testing by commenting /ok-to-test"
         echo "::endgroup::"
         exit 1
