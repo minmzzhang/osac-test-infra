@@ -48,6 +48,41 @@ POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "90"))
 PORT = int(os.getenv("PORT", "9103"))
 # Comma-separated list of repos to monitor. Empty = auto-discover active repos.
 REPOS_FILTER = [r.strip() for r in os.getenv("REPOS", "").split(",") if r.strip()]
+# Repositories whose default branch merge queues should be shown on the CI
+# health dashboard. Keep this explicit: polling every active org repository
+# would spend GraphQL rate limit on repos that do not use merge queues.
+MERGE_QUEUE_REPOS = [
+    repo.strip()
+    for repo in os.getenv("MERGE_QUEUE_REPOS", "osac,osac-test-infra").split(",")
+    if repo.strip()
+]
+MERGE_QUEUE_BRANCH = os.getenv("MERGE_QUEUE_BRANCH", "main")
+MERGE_QUEUE_QUERY = """
+query MergeQueueStatus($owner: String!, $name: String!, $branch: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    nameWithOwner
+    mergeQueue(branch: $branch) {
+      entries(first: 100, after: $after) {
+        nodes {
+          position
+          state
+          enqueuedAt
+          estimatedTimeToMerge
+          pullRequest {
+            number
+            title
+            url
+          }
+        }
+        pageInfo {
+          hasNextPage
+          endCursor
+        }
+      }
+    }
+  }
+}
+"""
 # How many days of job history to retain in the DB. A count cap alone (the
 # old JOBS_HISTORY_SIZE behavior, 500 jobs shared across all repos) gets
 # exhausted in ~10 hours during busy periods since PR/comment-triggered runs
@@ -442,6 +477,34 @@ class WorkflowExporter:
                         "approval_to_queue_seconds", "via_merge_queue"):
                 if col not in pr_merges_cols:
                     conn.execute(f"ALTER TABLE pr_merges ADD COLUMN {col} INTEGER")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS merge_queue_entries (
+                    repo TEXT NOT NULL,
+                    branch TEXT NOT NULL,
+                    number INTEGER NOT NULL,
+                    title TEXT NOT NULL DEFAULT '',
+                    url TEXT NOT NULL DEFAULT '',
+                    position INTEGER NOT NULL,
+                    state TEXT NOT NULL,
+                    enqueued_at TEXT NOT NULL,
+                    estimated_time_to_merge INTEGER,
+                    PRIMARY KEY (repo, branch, number)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS merge_queue_snapshots (
+                    repo TEXT NOT NULL,
+                    branch TEXT NOT NULL,
+                    observed_at TEXT,
+                    last_attempt_at TEXT NOT NULL,
+                    error TEXT,
+                    PRIMARY KEY (repo, branch)
+                )
+            """)
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_merge_queue_position "
+                "ON merge_queue_entries(repo, branch, position)"
+            )
         self._migrate_json_cache_if_needed()
         self._backfill_pr_data_from_legacy_cache()
         self._backfill_pr_approval_data_if_needed()
@@ -811,6 +874,130 @@ class WorkflowExporter:
         resp = requests.get(url, headers=self.headers, timeout=15)
         self._update_rate_limit(resp)
         return resp
+
+    def _save_merge_queue_snapshot(self, repo, branch, entries, observed_at, attempted_at):
+        """Replace one repository's current queue only after a full fetch."""
+        with self._db() as conn:
+            conn.execute(
+                "DELETE FROM merge_queue_entries WHERE repo = ? AND branch = ?",
+                (repo, branch),
+            )
+            conn.executemany(
+                "INSERT INTO merge_queue_entries "
+                "(repo, branch, number, title, url, position, state, enqueued_at, "
+                "estimated_time_to_merge) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        repo,
+                        branch,
+                        entry["number"],
+                        entry["title"],
+                        entry["url"],
+                        entry["position"],
+                        entry["state"],
+                        entry["enqueued_at"],
+                        entry["estimated_time_to_merge"],
+                    )
+                    for entry in entries
+                ],
+            )
+            conn.execute(
+                "INSERT INTO merge_queue_snapshots "
+                "(repo, branch, observed_at, last_attempt_at, error) "
+                "VALUES (?, ?, ?, ?, NULL) "
+                "ON CONFLICT(repo, branch) DO UPDATE SET "
+                "observed_at = excluded.observed_at, "
+                "last_attempt_at = excluded.last_attempt_at, error = NULL",
+                (repo, branch, observed_at, attempted_at),
+            )
+
+    def _record_merge_queue_fetch_failure(self, repo, branch, attempted_at, error):
+        """Keep the last good queue snapshot and expose its fetch error."""
+        with self._db() as conn:
+            conn.execute(
+                "INSERT INTO merge_queue_snapshots "
+                "(repo, branch, observed_at, last_attempt_at, error) "
+                "VALUES (?, ?, NULL, ?, ?) "
+                "ON CONFLICT(repo, branch) DO UPDATE SET "
+                "last_attempt_at = excluded.last_attempt_at, error = excluded.error",
+                (repo, branch, attempted_at, str(error)[:300]),
+            )
+
+    def _refresh_merge_queue_status(self):
+        """Poll configured queues and persist the latest successful snapshot."""
+        if not MERGE_QUEUE_REPOS:
+            return
+
+        endpoint = f"{API_URL}/graphql"
+        for repo in MERGE_QUEUE_REPOS:
+            attempted_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            entries = []
+            after = None
+            try:
+                while True:
+                    response = requests.post(
+                        endpoint,
+                        headers={**self.headers, "Accept": "application/vnd.github+json"},
+                        json={
+                            "query": MERGE_QUEUE_QUERY,
+                            "variables": {
+                                "owner": ORG,
+                                "name": repo,
+                                "branch": MERGE_QUEUE_BRANCH,
+                                "after": after,
+                            },
+                        },
+                        timeout=15,
+                    )
+                    self._update_rate_limit(response)
+                    if not response.ok:
+                        raise RuntimeError(f"GitHub GraphQL returned HTTP {response.status_code}")
+
+                    payload = response.json()
+                    if payload.get("errors"):
+                        raise RuntimeError("GitHub GraphQL returned errors")
+                    repository = (payload.get("data") or {}).get("repository")
+                    if repository is None:
+                        raise RuntimeError("GitHub GraphQL did not return the repository")
+
+                    merge_queue = repository.get("mergeQueue")
+                    if merge_queue is None:
+                        # A successful null queue means this branch currently
+                        # has no merge queue configured; clear any stale rows.
+                        break
+
+                    connection = merge_queue.get("entries") or {}
+                    for node in connection.get("nodes") or []:
+                        pull_request = node.get("pullRequest") or {}
+                        number = pull_request.get("number")
+                        if number is None:
+                            raise RuntimeError("GitHub GraphQL returned a queue entry without a pull request")
+                        entries.append({
+                            "number": number,
+                            "title": pull_request.get("title") or "",
+                            "url": pull_request.get("url") or "",
+                            "position": node["position"],
+                            "state": node["state"],
+                            "enqueued_at": node["enqueuedAt"],
+                            "estimated_time_to_merge": node.get("estimatedTimeToMerge"),
+                        })
+
+                    page_info = connection.get("pageInfo") or {}
+                    if not page_info.get("hasNextPage"):
+                        break
+                    next_after = page_info.get("endCursor")
+                    if not next_after or next_after == after:
+                        raise RuntimeError("GitHub GraphQL pagination did not advance")
+                    after = next_after
+
+                observed_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                self._save_merge_queue_snapshot(
+                    repo, MERGE_QUEUE_BRANCH, entries, observed_at, attempted_at
+                )
+            except Exception as exc:
+                logger.warning("Failed to refresh merge queue for %s/%s: %s", repo, MERGE_QUEUE_BRANCH, exc)
+                self._record_merge_queue_fetch_failure(repo, MERGE_QUEUE_BRANCH, attempted_at, exc)
 
     # -- repo listing --------------------------------------------------------
 
@@ -1873,6 +2060,10 @@ class WorkflowExporter:
     def collect(self):
         self._prune_jobs()
         self._prune_pr_merges()
+        # Keep live merge-queue snapshots alongside the historical workflow
+        # data. The Grafana API reads the local SQLite snapshot, so dashboard
+        # refreshes never trigger GitHub API calls themselves.
+        self._refresh_merge_queue_status()
         repos = REPOS_FILTER if REPOS_FILTER else self.get_active_repos()
         self._refresh_pr_map(repos)
         if not self._pr_backfill_done:
@@ -3032,6 +3223,103 @@ class WorkflowExporter:
         ]
         return result
 
+    def get_merge_queue_status_json(self, params):
+        """Return the latest live merge-queue snapshot and its freshness."""
+        repo_filter = self._parse_grafana_param(params, "repo")
+        selected_repos = MERGE_QUEUE_REPOS
+        if repo_filter:
+            selected_repos = [repo_filter] if repo_filter in MERGE_QUEUE_REPOS else []
+        if not selected_repos:
+            return {"observed_at": None, "total_entries": 0, "by_state": [], "repos": [], "entries": []}
+
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        repo_placeholders = ", ".join("?" for _ in selected_repos)
+        args = tuple(selected_repos)
+
+        with self._db() as conn:
+            snapshot_rows = conn.execute(
+                "SELECT s.repo, s.branch, s.observed_at, s.last_attempt_at, s.error, "
+                "(SELECT COUNT(*) FROM merge_queue_entries e "
+                " WHERE e.repo = s.repo AND e.branch = s.branch) AS entry_count "
+                "FROM merge_queue_snapshots s "
+                f"WHERE s.repo IN ({repo_placeholders}) "
+                "ORDER BY s.repo, s.branch",
+                args,
+            ).fetchall()
+            entry_rows = conn.execute(
+                "SELECT repo, branch, number, title, url, position, state, "
+                "enqueued_at, estimated_time_to_merge "
+                "FROM merge_queue_entries "
+                f"WHERE repo IN ({repo_placeholders}) "
+                "ORDER BY repo, branch, position",
+                args,
+            ).fetchall()
+
+        repo_status = {
+            (row["repo"], row["branch"]): {
+                "repo": row["repo"],
+                "branch": row["branch"],
+                "observed_at": row["observed_at"],
+                "last_attempt_at": row["last_attempt_at"],
+                "error": row["error"],
+                "entry_count": row["entry_count"],
+            }
+            for row in snapshot_rows
+        }
+        for repo in selected_repos:
+            repo_status.setdefault(
+                (repo, MERGE_QUEUE_BRANCH),
+                {
+                    "repo": repo,
+                    "branch": MERGE_QUEUE_BRANCH,
+                    "observed_at": None,
+                    "last_attempt_at": None,
+                    "error": "Waiting for first poll",
+                    "entry_count": 0,
+                },
+            )
+
+        entries = []
+        state_counts = {}
+        for row in entry_rows:
+            queue_wait_seconds = self._seconds_between(row["enqueued_at"], now)
+            estimated_seconds = row["estimated_time_to_merge"]
+            state_counts[row["state"]] = state_counts.get(row["state"], 0) + 1
+            entries.append({
+                "repo": row["repo"],
+                "branch": row["branch"],
+                "number": row["number"],
+                "title": row["title"],
+                "url": row["url"],
+                "position": row["position"],
+                "state": row["state"],
+                "enqueued_at": row["enqueued_at"],
+                "queue_wait_seconds": queue_wait_seconds,
+                "queue_wait_display": (
+                    self._fmt_duration(queue_wait_seconds)
+                    if queue_wait_seconds is not None else "n/a"
+                ),
+                "estimated_time_to_merge_seconds": estimated_seconds,
+                "estimated_time_to_merge_display": (
+                    self._fmt_duration(estimated_seconds)
+                    if estimated_seconds is not None else "n/a"
+                ),
+            })
+
+        return {
+            "observed_at": min(
+                (row["observed_at"] for row in repo_status.values() if row["observed_at"]),
+                default=None,
+            ),
+            "total_entries": len(entries),
+            "by_state": [
+                {"state": state, "count": count}
+                for state, count in sorted(state_counts.items())
+            ],
+            "repos": sorted(repo_status.values(), key=lambda row: (row["repo"], row["branch"])),
+            "entries": entries,
+        }
+
     def get_merge_queue_metrics_json(self, params):
         """Merge queue latency percentiles and throughput, filtered by when
         the PR was *merged* (same convention as get_pr_merge_time_json).
@@ -3216,6 +3504,16 @@ class ExporterHandler(BaseHTTPRequestHandler):
         elif parsed.path == "/api/merge-queue-metrics":
             params = parse_qs(parsed.query)
             data = self.exporter.get_merge_queue_metrics_json(params)
+            payload = json.dumps(data, default=str)
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(payload.encode())
+
+        elif parsed.path == "/api/merge-queue-status":
+            params = parse_qs(parsed.query)
+            data = self.exporter.get_merge_queue_status_json(params)
             payload = json.dumps(data, default=str)
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

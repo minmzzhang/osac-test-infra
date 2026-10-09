@@ -666,6 +666,140 @@
           ]
         }
       ]
+    },
+    {
+      "title": "PRs Currently in Queue",
+      "description": "Current merge queue size from the latest GitHub GraphQL snapshot. The exporter polls every 90 seconds; see the queue poll status panel for snapshot freshness.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 34 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "workflow-api" },
+      "fieldConfig": { "defaults": { "noValue": "0" }, "overrides": [] },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "/total_entries/", "values": false },
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://127.0.0.1:9103/api/merge-queue-status?repo=${repo_filter}",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "$",
+          "columns": [
+            { "selector": "total_entries", "text": "total_entries", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Current Queue by State",
+      "description": "Number of queued pull requests in each GitHub merge queue state.",
+      "type": "table",
+      "gridPos": { "h": 4, "w": 8, "x": 4, "y": 34 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "workflow-api" },
+      "fieldConfig": {
+        "defaults": { "noValue": "Queue is empty" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "state" }, "properties": [{ "id": "displayName", "value": "State" }] },
+          { "matcher": { "id": "byName", "options": "count" }, "properties": [{ "id": "displayName", "value": "PRs" }] }
+        ]
+      },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://127.0.0.1:9103/api/merge-queue-status?repo=${repo_filter}",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "by_state",
+          "columns": [
+            { "selector": "state", "text": "state", "type": "string" },
+            { "selector": "count", "text": "count", "type": "number" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Queue Poll Status",
+      "description": "Snapshot time and latest poll result by repository. A failed refresh leaves the last successful queue snapshot visible and reports the error here.",
+      "type": "table",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 34 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "workflow-api" },
+      "fieldConfig": {
+        "defaults": { "noValue": "n/a" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "repo" }, "properties": [{ "id": "displayName", "value": "Repository" }] },
+          { "matcher": { "id": "byName", "options": "branch" }, "properties": [{ "id": "displayName", "value": "Branch" }] },
+          { "matcher": { "id": "byName", "options": "observed_at" }, "properties": [{ "id": "displayName", "value": "Snapshot (UTC)" }] },
+          { "matcher": { "id": "byName", "options": "entry_count" }, "properties": [{ "id": "displayName", "value": "PRs" }] },
+          { "matcher": { "id": "byName", "options": "error" }, "properties": [{ "id": "displayName", "value": "Last Poll Error" }] }
+        ]
+      },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://127.0.0.1:9103/api/merge-queue-status?repo=${repo_filter}",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "repos",
+          "columns": [
+            { "selector": "repo", "text": "repo", "type": "string" },
+            { "selector": "branch", "text": "branch", "type": "string" },
+            { "selector": "observed_at", "text": "observed_at", "type": "string" },
+            { "selector": "entry_count", "text": "entry_count", "type": "number" },
+            { "selector": "error", "text": "error", "type": "string" }
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Pull Requests Currently in Merge Queue",
+      "description": "Live snapshot of pull requests in the configured default-branch merge queues, including position, state, time in queue, and GitHub's estimated time to merge. Refreshes from the exporter snapshot every minute; the exporter polls GitHub every 90 seconds.",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 38 },
+      "datasource": { "type": "yesoreyeram-infinity-datasource", "uid": "workflow-api" },
+      "fieldConfig": {
+        "defaults": { "noValue": "No pull requests currently in the merge queue" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "repo" }, "properties": [{ "id": "displayName", "value": "Repository" }, { "id": "custom.width", "value": 150 }] },
+          { "matcher": { "id": "byName", "options": "position" }, "properties": [{ "id": "displayName", "value": "Position" }, { "id": "custom.width", "value": 85 }] },
+          { "matcher": { "id": "byName", "options": "number" }, "properties": [{ "id": "displayName", "value": "PR" }, { "id": "custom.width", "value": 75 }] },
+          { "matcher": { "id": "byName", "options": "title" }, "properties": [{ "id": "displayName", "value": "Title" }, { "id": "custom.width", "value": 380 }] },
+          { "matcher": { "id": "byName", "options": "state" }, "properties": [{ "id": "displayName", "value": "State" }, { "id": "custom.width", "value": 140 }] },
+          { "matcher": { "id": "byName", "options": "queue_wait_display" }, "properties": [{ "id": "displayName", "value": "Time in Queue" }, { "id": "custom.width", "value": 140 }] },
+          { "matcher": { "id": "byName", "options": "estimated_time_to_merge_display" }, "properties": [{ "id": "displayName", "value": "Est. Time to Merge" }, { "id": "custom.width", "value": 155 }] }
+        ]
+      },
+      "options": { "showHeader": true, "footer": { "show": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "type": "json",
+          "source": "url",
+          "format": "table",
+          "url": "http://127.0.0.1:9103/api/merge-queue-status?repo=${repo_filter}",
+          "url_options": { "method": "GET", "data": "" },
+          "root_selector": "entries",
+          "columns": [
+            { "selector": "repo", "text": "repo", "type": "string" },
+            { "selector": "position", "text": "position", "type": "number" },
+            { "selector": "number", "text": "number", "type": "number" },
+            { "selector": "title", "text": "title", "type": "string" },
+            { "selector": "state", "text": "state", "type": "string" },
+            { "selector": "queue_wait_display", "text": "queue_wait_display", "type": "string" },
+            { "selector": "estimated_time_to_merge_display", "text": "estimated_time_to_merge_display", "type": "string" }
+          ]
+        }
+      ]
     }
   ],
   "schemaVersion": 39,
@@ -826,5 +960,6 @@
   "timezone": "browser",
   "title": "OSAC CI - Health Overview",
   "uid": "osac-ci-health",
+  "refresh": "1m",
   "version": 1
 }

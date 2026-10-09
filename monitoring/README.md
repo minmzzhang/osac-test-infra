@@ -261,6 +261,18 @@ Direct HTTPS on the central machine, GitHub OAuth login restricted to the
 Workflow Jobs, Workflow Metrics, and Health Overview (a team-facing summary --
 pass rate trend, flake rate, MTTR -- for standups/sprint reviews, see OSAC-2064).
 
+The Health Overview dashboard's **Merge Queue** section includes historical
+queue latency plus a live snapshot of pull requests currently queued on
+`osac` and `osac-test-infra`'s `main` branches. The workflow exporter polls
+GitHub's GraphQL API every 90 seconds and serves the cached snapshot at
+`http://127.0.0.1:9103/api/merge-queue-status`; Grafana refreshes the dashboard
+every minute. The snapshot includes queue position, GitHub queue state, time
+since enqueue, estimated time to merge, and per-repository poll freshness and
+errors. Failed polls preserve the last successful snapshot and surface the
+error in **Queue Poll Status**. Configure the monitored queues with
+`MERGE_QUEUE_REPOS` (comma-separated repository names) and
+`MERGE_QUEUE_BRANCH` in `workflow-exporter.container`.
+
 Also reachable via an internal relay machine instead of the central host's
 public IP -- see [`vpn-relay-access.md`](vpn-relay-access.md) for why and
 how to set one up.
