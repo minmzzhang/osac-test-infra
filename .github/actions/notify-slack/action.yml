@@ -190,14 +190,58 @@ runs:
           echo "Sending notification to Slack via chat.postMessage..."
           PAYLOAD=$(jq -n --argjson base "$PAYLOAD" --arg channel "$INPUT_SLACK_CHANNEL_ID" \
             '$base + {"channel": $channel}')
+
+          # A broken bot path (revoked token, missing scope, bot removed from
+          # the channel, network error) must not drop the alert entirely. The
+          # webhook has its own fixed target channel and returns no message
+          # ts, so message-ts stays unset and the callers' `message-ts != ''`
+          # guards skip the threaded diagnosis -- degraded, but the failure
+          # still reaches Slack.
+          post_fallback_or_fail() {
+            if [ -n "$INPUT_SLACK_WEBHOOK" ]; then
+              echo "::warning::Slack chat.postMessage failed: $1; falling back to the incoming webhook (no thread replies)."
+              # Say so in the message too: the thread that normally carries
+              # the AI diagnosis is missing here, and the channel is the only
+              # place a reader looks.
+              FALLBACK_PAYLOAD=$(echo "$PAYLOAD" | jq '
+                del(.channel)
+                | .blocks += [{
+                    "type": "context",
+                    "elements": [{
+                      "type": "mrkdwn",
+                      "text": "_via webhook fallback -- threaded diagnosis unavailable_"
+                    }]
+                  }]')
+              curl -sf --connect-timeout 10 --max-time 30 \
+                -X POST -H 'Content-type: application/json' --data "$FALLBACK_PAYLOAD" "$INPUT_SLACK_WEBHOOK"
+              exit 0
+            fi
+            echo "::error::Slack chat.postMessage failed: $1"
+            exit 1
+          }
+
+          CURL_STATUS=0
           RESPONSE=$(curl -sf --connect-timeout 10 --max-time 30 \
             -X POST -H "Authorization: Bearer ${INPUT_SLACK_BOT_TOKEN}" \
             -H 'Content-type: application/json; charset=utf-8' \
-            --data "$PAYLOAD" "https://slack.com/api/chat.postMessage")
-          OK=$(echo "$RESPONSE" | jq -r '.ok')
+            --data "$PAYLOAD" "https://slack.com/api/chat.postMessage") || CURL_STATUS=$?
+          if [ "$CURL_STATUS" -ne 0 ]; then
+            post_fallback_or_fail "curl exit ${CURL_STATUS}"
+          fi
+          OK=$(echo "$RESPONSE" | jq -r '.ok // empty' 2>/dev/null || true)
           if [ "$OK" != "true" ]; then
-            echo "::error::Slack chat.postMessage failed: $(echo "$RESPONSE" | jq -r '.error // "unknown error"')"
-            exit 1
+            # Print what Slack actually said. A bare "missing_scope" hides
+            # which scope is missing; `needed`/`provided` name it directly.
+            # Parse tolerantly: a proxy or HTML error page is not JSON.
+            ERROR=$(echo "$RESPONSE" | jq -r '.error // empty' 2>/dev/null || true)
+            NEEDED=$(echo "$RESPONSE" | jq -r '.needed // empty' 2>/dev/null || true)
+            PROVIDED=$(echo "$RESPONSE" | jq -r '.provided // empty' 2>/dev/null || true)
+            [ -n "$ERROR" ] || ERROR="unparseable response: ${RESPONSE:0:200}"
+            DETAIL="$ERROR"
+            if [ -n "$NEEDED" ] || [ -n "$PROVIDED" ]; then
+              DETAIL="${DETAIL} (needed: ${NEEDED:-unknown}; provided: ${PROVIDED:-none})"
+            fi
+            post_fallback_or_fail "$DETAIL"
           fi
           TS=$(echo "$RESPONSE" | jq -r '.ts')
           echo "message-ts=${TS}" >> "$GITHUB_OUTPUT"

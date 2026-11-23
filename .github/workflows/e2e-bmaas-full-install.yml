@@ -1088,6 +1088,9 @@ jobs:
           # digest (post-ci-digest.py).
           slack-bot-token: ${{ steps.secrets.outputs.SLACK_BOT_TOKEN }}
           slack-channel-id: ${{ steps.secrets.outputs.SLACK_CHANNEL_ID }}
+          # Fallback only: if chat.postMessage fails, the webhook still
+          # delivers the alert, minus the threaded diagnosis.
+          slack-webhook-url: ${{ steps.secrets.outputs.SLACK_WEBHOOK_URL }}
           workflow-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           branch-name: ${{ github.ref_name }}
           commit-sha: ${{ github.sha }}

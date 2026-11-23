@@ -479,6 +479,14 @@ path "secret/data/osac/monitoring/github-token" {
 path "secret/data/osac/monitoring/slack-webhook-url" {
   capabilities = ["read"]
 }
+# CI Slack bot token, channel ID, and chai-bot user ID -- read by
+# fetch-and-write-secrets for the e2e failure alert, its threaded AI
+# diagnosis, and the daily CI digest. Live Vault already grants this path
+# (added by hand), but it is missing here, so re-running this phase would
+# silently revoke it and every scheduled e2e failure would stop alerting.
+path "secret/data/osac/monitoring/slack-bot" {
+  capabilities = ["read"]
+}
 # Grafana's GitHub OAuth app credentials + root URL -- previously only in
 # the manually-configured .env.grafana / hardcoded in grafana.container
 # on osac-ci-1, never in git.
