@@ -1,0 +1,7 @@
+# UBI repositories mirrored into ghcr.io/osac-project by
+# .github/workflows/mirror-ubi-bases.yml. This list is a CI-only workaround for
+# flaky anonymous pulls from registry.access.redhat.com -- it is not a pattern
+# for product images. Repositories are paths relative to the source registry;
+# blank lines and lines starting with '#' are ignored.
+ubi10-minimal
+ubi10/go-toolset

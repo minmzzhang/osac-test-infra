@@ -1,0 +1,95 @@
+name: Mirror UBI Base Images
+
+# CI-only workaround, not a pattern to reuse. The e2e image builds here pull
+# registry.access.redhat.com bases anonymously, and that registry's token
+# endpoint intermittently answers 401, failing whole jobs. This workflow keeps
+# the two bases those builds share stocked in GHCR as byte-identical copies
+# (digests preserved) so the builds can pull from GHCR instead.
+#
+# Do not extend this to product images. Product deployments pull third-party
+# images from the upstream registry directly -- the ghcr.io/osac-project/envoy
+# mirror is being retired for exactly that reason. This cache is an exception
+# for CI base-image pulls, not a precedent for mirroring more images.
+#
+# The tags come from the osac mono-repo's Containerfiles, filtered by
+# .github/ubi-mirror-repos.txt: add a repository to that list to widen scope.
+
+on:
+  workflow_dispatch:
+  # Weekly refresh, for tags republished under a moving name.
+  schedule:
+    - cron: '17 5 * * 1'  # Monday 5:17am UTC
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/ubi-mirror.sh'
+      - '.github/ubi-mirror-repos.txt'
+      - '.github/workflows/mirror-ubi-bases.yml'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          persist-credentials: false
+
+      - name: Check out the osac mono-repo to read its Containerfiles
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          repository: osac-project/osac
+          path: osac
+          persist-credentials: false
+
+      - name: Collect the UBI base images the Containerfiles use
+        run: |
+          set -euo pipefail
+          mapfile -t containerfiles < <(git -C osac ls-files -- '*Containerfile*')
+          ((${#containerfiles[@]}))
+          .github/scripts/ubi-mirror.sh list "${containerfiles[@]/#/osac/}" | tee ubi-bases.txt
+          test -s ubi-bases.txt
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0  # v4.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install skopeo
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+
+      - name: Mirror every image and compare digests
+        run: |
+          set -euo pipefail
+          while read -r ref; do
+            target=$(.github/scripts/ubi-mirror.sh mirror "${ref}")
+            skopeo copy --all --preserve-digests "docker://${ref}" "docker://${target}"
+            source_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${ref}")
+            target_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${target}")
+            if [ "${source_digest}" != "${target_digest}" ]; then
+              echo "::error title=ubi-mirror::digest mismatch for ${ref}"
+              exit 1
+            fi
+            echo "Mirrored ${ref} -> ${target} (${source_digest})"
+          done < ubi-bases.txt
+
+      # A new package starts private. The token used above would mask that, so
+      # log out first: this step fails until the package is made public.
+      - name: Verify every mirror pulls anonymously
+        run: |
+          set -euo pipefail
+          docker logout ghcr.io || true
+          while read -r ref; do
+            target=$(.github/scripts/ubi-mirror.sh mirror "${ref}")
+            skopeo inspect --no-creds --no-tags "docker://${target}" >/dev/null
+            echo "Anonymous pull OK: ${target}"
+          done < ubi-bases.txt
