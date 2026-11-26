@@ -47,10 +47,13 @@ filter_repos() {
   fi
   awk -v registry="${registry}/" '
     NR == FNR {
+      # Normalize CRLF: a stray \r would otherwise miss every include entry.
+      sub(/\r$/, "")
       if ($0 !~ /^[[:space:]]*(#|$)/) { include[$0] = 1 }
       next
     }
     {
+      sub(/\r$/, "")
       if (index($0, registry) != 1) { next }
       repo = substr($0, length(registry) + 1)
       sub(/:[^:/]*$/, "", repo)

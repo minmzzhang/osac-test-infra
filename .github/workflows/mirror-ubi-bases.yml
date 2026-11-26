@@ -70,11 +70,32 @@ jobs:
       - name: Mirror every image and compare digests
         run: |
           set -euo pipefail
+
+          # The Red Hat token endpoint intermittently answers 401, which skopeo
+          # treats as an auth error and does not retry itself.
+          retry() {
+            local attempt delay
+            for attempt in 1 2 3 4 5; do
+              if "$@"; then
+                return 0
+              fi
+              if [ "${attempt}" -eq 5 ]; then
+                break
+              fi
+              delay=$((attempt * 10))
+              echo "::warning title=ubi-mirror::attempt ${attempt}/5 failed; retrying in ${delay}s" >&2
+              sleep "${delay}"
+            done
+            return 1
+          }
+
           while read -r ref; do
             target=$(.github/scripts/ubi-mirror.sh mirror "${ref}")
-            skopeo copy --all --preserve-digests "docker://${ref}" "docker://${target}"
-            source_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${ref}")
-            target_digest=$(skopeo inspect --no-tags --format '{{.Digest}}' "docker://${target}")
+            retry skopeo copy --all --preserve-digests "docker://${ref}" "docker://${target}"
+            # For a multi-arch image skopeo reports Digest as the top-level
+            # index digest, so equality here covers every architecture.
+            source_digest=$(retry skopeo inspect --no-tags --format '{{.Digest}}' "docker://${ref}")
+            target_digest=$(retry skopeo inspect --no-tags --format '{{.Digest}}' "docker://${target}")
             if [ "${source_digest}" != "${target_digest}" ]; then
               echo "::error title=ubi-mirror::digest mismatch for ${ref}"
               exit 1
