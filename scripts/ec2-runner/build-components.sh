@@ -38,7 +38,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-UBI_MIRROR="${SCRIPT_DIR}/../../.github/scripts/ubi-mirror.sh"
+UBI_MIRROR_SCRIPT="${SCRIPT_DIR}/../../.github/scripts/ubi-mirror.sh"
 
 MODE="${1:-}"
 : "${COMPONENT_STATE_DIR:?COMPONENT_STATE_DIR is required}"
@@ -88,7 +88,7 @@ components_json() {
 # so a base bumped ahead of the mirror refresh still builds.
 prepull_ubi_bases() {
   [[ -f "$1" ]] || return 0
-  "${UBI_MIRROR}" prepull "$1" || echo "::warning title=ubi-prepull::prepull failed for $1"
+  "${UBI_MIRROR_SCRIPT}" prepull "$1" || echo "::warning title=ubi-prepull::prepull failed for $1"
 }
 
 # ansible-builder lives in its own venv: the lab's ansible-playbook runs from
@@ -170,12 +170,12 @@ build() {
       build_context="${component_dir}"
     fi
 
-    prepull_ubi_bases "${component_dir}/${containerfile_name}"
-
     if [[ "${build_type}" == "ansible-builder" ]]; then
       ansible_builder create --file "${component_dir}/${containerfile_name}" --context "${component_dir}/context"
+      prepull_ubi_bases "${component_dir}/context/Containerfile"
       podman build -t "${tag}" -f "${component_dir}/context/Containerfile" "${component_dir}/context"
     else
+      prepull_ubi_bases "${component_dir}/${containerfile_name}"
       podman build --env GODEBUG=http2client=0 --unsetenv GODEBUG -t "${tag}" -f "${component_dir}/${containerfile_name}" "${build_context}"
     fi
 

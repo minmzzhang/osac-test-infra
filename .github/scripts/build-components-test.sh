@@ -39,16 +39,30 @@ case "$1" in
   save) echo "image-bytes" ;;
 esac
 STUB
-# Stands in for the system Python: only "-m venv <dir>" does anything.
+# Stands in for the system Python: only "-m venv <dir>" does anything. The
+# ansible-builder stub writes the context/Containerfile that "create" would.
 cat > "${WORK}/bin/fake-python" <<'STUB'
 #!/usr/bin/env bash
 echo "python3 $*" >> "${STUB_LOG}"
 if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then
   mkdir -p "$3/bin"
-  for tool in pip ansible-builder; do
-    printf '#!/usr/bin/env bash\necho "venv-%s $*" >> "${STUB_LOG}"\n' "${tool}" > "$3/bin/${tool}"
-    chmod +x "$3/bin/${tool}"
+  printf '#!/usr/bin/env bash\necho "venv-pip $*" >> "${STUB_LOG}"\n' > "$3/bin/pip"
+  cat > "$3/bin/ansible-builder" <<'AB'
+#!/usr/bin/env bash
+echo "venv-ansible-builder $*" >> "${STUB_LOG}"
+if [[ "${1:-}" == "create" ]]; then
+  context=""
+  while (($#)); do
+    case "$1" in
+      --context) context=$2; shift 2 ;;
+      *) shift ;;
+    esac
   done
+  mkdir -p "${context}"
+  echo 'FROM registry.access.redhat.com/ubi10-minimal:10.2-1793642999' > "${context}/Containerfile"
+fi
+AB
+  chmod +x "$3/bin/"*
 fi
 STUB
 cat > "${WORK}/bin/oc" <<'STUB'
@@ -154,14 +168,18 @@ test_build_prepulls_and_retags_ubi_bases() {
   run build
   assert_eq "${RC}" 0 "exit code (${OUT})"
   assert_eq "$(count_calls '^podman build')" 4 "podman build count"
-  # Three components build on the two mirrored bases; both copies are already
-  # in local storage, so prepull retags them without pulling.
-  assert_eq "$(count_calls '^podman image inspect ghcr.io/osac-project/')" 6 "prepull inspections"
+  # Three components build on the two mirrored bases, and the generated
+  # ansible-builder Containerfile adds a third ref. Every copy is already in
+  # local storage, so prepull retags it without pulling.
+  assert_eq "$(count_calls '^podman image inspect ghcr.io/osac-project/')" 7 "prepull inspections"
   assert_eq "$(count_calls '^podman pull ')" 0 "prepull pulls for images already local"
-  assert_eq "$(count_calls '^podman tag ghcr.io/osac-project/')" 6 "prepull retags"
+  assert_eq "$(count_calls '^podman tag ghcr.io/osac-project/')" 7 "prepull retags"
   assert_contains "$(grep '^podman tag ' "${STUB_LOG}")" \
     "ghcr.io/osac-project/ubi10-minimal:10.2-1793642335 registry.access.redhat.com/ubi10-minimal:10.2-1793642335" \
     "mirror retagged as the source reference"
+  assert_contains "$(grep '^podman tag ' "${STUB_LOG}")" \
+    "ghcr.io/osac-project/ubi10-minimal:10.2-1793642999 registry.access.redhat.com/ubi10-minimal:10.2-1793642999" \
+    "generated ansible-builder Containerfile is prepulled"
 }
 
 test_build_pulls_mirror_when_missing_locally() {
@@ -169,8 +187,8 @@ test_build_pulls_mirror_when_missing_locally() {
   export STUB_IMAGE_INSPECT_RC=1
   run build
   assert_eq "${RC}" 0 "exit code (${OUT})"
-  assert_eq "$(count_calls '^podman pull ghcr.io/osac-project/')" 6 "prepull pulls"
-  assert_eq "$(count_calls '^podman tag ghcr.io/osac-project/')" 6 "prepull retags"
+  assert_eq "$(count_calls '^podman pull ghcr.io/osac-project/')" 7 "prepull pulls"
+  assert_eq "$(count_calls '^podman tag ghcr.io/osac-project/')" 7 "prepull retags"
 }
 
 test_build_falls_back_when_mirror_pull_fails() {
