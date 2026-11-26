@@ -18,7 +18,7 @@ case "$*" in
     for dir in fulfillment-service osac-operator bare-metal-fulfillment-operator; do
       {
         echo 'FROM registry.access.redhat.com/ubi10/go-toolset:1.26.10-1793622842 AS builder'
-        echo 'FROM registry.access.redhat.com/ubi10-minimal:10.2-1793642332'
+        echo 'FROM registry.access.redhat.com/ubi10-minimal:10.2-1793642335'
       } > "$2/$dir/Containerfile"
     done
     ;;
@@ -160,7 +160,7 @@ test_build_prepulls_and_retags_ubi_bases() {
   assert_eq "$(count_calls '^podman pull ')" 0 "prepull pulls for images already local"
   assert_eq "$(count_calls '^podman tag ghcr.io/osac-project/')" 6 "prepull retags"
   assert_contains "$(grep '^podman tag ' "${STUB_LOG}")" \
-    "ghcr.io/osac-project/ubi10-minimal:10.2-1793642332 registry.access.redhat.com/ubi10-minimal:10.2-1793642332" \
+    "ghcr.io/osac-project/ubi10-minimal:10.2-1793642335 registry.access.redhat.com/ubi10-minimal:10.2-1793642335" \
     "mirror retagged as the source reference"
 }
 
