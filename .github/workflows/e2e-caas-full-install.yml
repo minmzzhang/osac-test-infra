@@ -480,6 +480,10 @@ jobs:
               build_context="${component_dir}"
             fi
 
+            # Prefer the CI mirror of the UBI bases; prepull retags the GHCR
+            # copies to the source names and falls back on a miss.
+            .github/scripts/ubi-mirror.sh prepull "${component_dir}/${containerfile_name}" || true
+
             if [[ "${build_type}" == "ansible-builder" ]]; then
               python3 -m pip install --quiet 'ansible-builder~=3.0'
               ansible-builder create --file "${component_dir}/${containerfile_name}" --context "${component_dir}/context"

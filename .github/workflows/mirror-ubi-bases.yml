@@ -1,10 +1,12 @@
 name: Mirror UBI Base Images
 
-# CI-only workaround, not a pattern to reuse. The e2e image builds here pull
-# registry.access.redhat.com bases anonymously, and that registry's token
-# endpoint intermittently answers 401, failing whole jobs. This workflow keeps
-# the two bases those builds share stocked in GHCR as byte-identical copies
-# (digests preserved) so the builds can pull from GHCR instead.
+# CI-only workaround, not a pattern to reuse. The e2e and integration image
+# builds pull registry.access.redhat.com bases anonymously, and that registry's
+# token endpoint intermittently answers 401, failing whole jobs. This workflow
+# keeps the two bases those builds share stocked in GHCR as byte-identical
+# copies (digests preserved). The builds run .github/scripts/ubi-mirror.sh
+# prepull, which loads those copies and retags them under the source names, so
+# their Containerfiles stay unchanged.
 #
 # Do not extend this to product images. Product deployments pull third-party
 # images from the upstream registry directly -- the ghcr.io/osac-project/envoy
