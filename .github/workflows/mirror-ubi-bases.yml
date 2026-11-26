@@ -18,9 +18,10 @@ name: Mirror UBI Base Images
 
 on:
   workflow_dispatch:
-  # Weekly refresh, for tags republished under a moving name.
+  # Daily refresh: a Dependabot base-image bump should reach the mirror within
+  # a day, and tags republished under a moving name still get picked up.
   schedule:
-    - cron: '17 5 * * 1'  # Monday 5:17am UTC
+    - cron: '17 5 * * *'  # daily 5:17am UTC
   push:
     branches: [main]
     paths:
